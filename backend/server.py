@@ -1129,7 +1129,7 @@ OTA_REPO = "https://github.com/darkLabz001/kali-touch-ui.git"
 OTA_BRANCH = "main"
 OTA_DIR = "/opt/kali-touch-ui"
 OTA_LOG = "/tmp/ota.log"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.1.0"
 _ota_busy = False
 _ota_lock = threading.Lock()
 
@@ -1174,6 +1174,7 @@ def ota_status():
     if os.path.exists(OTA_LOG):
         with open(OTA_LOG) as f:
             log = f.read()
+    pct, stage = _ota_progress()
     return {
         "ok": True,
         "version": APP_VERSION,
@@ -1185,6 +1186,8 @@ def ota_status():
         "up_to_date": bool(local and local == remote),
         "installed": bool(local),
         "busy": _ota_busy,
+        "pct": pct,
+        "stage": stage,
         "log": log[-4000:],
     }
 
@@ -1195,6 +1198,35 @@ def ota_update():
         if _ota_busy:
             return {"ok": False, "msg": "an update is already running", "busy": True}
         _ota_busy = True
+    threading.Thread(target=_ota_run, daemon=True).start()
+    return {"ok": True, "msg": "update started"}
+
+
+def _ota_progress():
+    if not os.path.exists(OTA_LOG):
+        return None, ""
+    with open(OTA_LOG) as f:
+        txt = f.read()
+    pct = None
+    for m in re.finditer(r"Receiving objects:\s+(\d+)%", txt):
+        pct = int(m.group(1))
+    stage = ""
+    for marker, label in (
+        ("syntax check", "verifying"),
+        ("reset --hard", "applying"),
+        ("Fetching", "fetching"),
+        ("Receiving objects", "fetching"),
+        ("update complete", "done"),
+    ):
+        if marker in txt:
+            stage = label
+            break
+    return pct, stage
+
+
+def _ota_run():
+    """Run the fetch/apply/syntax/restart cycle (called from a thread)."""
+    global _ota_busy
     try:
         with open(OTA_LOG, "w") as f:
             f.write("")
@@ -1202,7 +1234,7 @@ def ota_update():
         if not ota_local_sha():
             _ota_log("install not set up for OTA (not a git repo)")
             return {"ok": False, "msg": "OTA not configured on this install"}
-        rc, out = _ota_sh("git -C %s fetch origin" % OTA_DIR, 120)
+        rc, out = _ota_sh("git -C %s fetch --progress origin" % OTA_DIR, 120)
         if rc != 0:
             _ota_log("fetch FAILED: " + out[-200:])
             return {"ok": False, "msg": "fetch failed: " + out[-80:]}
@@ -1270,6 +1302,23 @@ class Handler(BaseHTTPRequestHandler):
                 return f.read(6000).decode("utf-8", "replace")
         return ""
 
+    @staticmethod
+    def _apt_progress():
+        txt = Handler._apt_tail()
+        pct = None
+        global APT_PROC
+        if APT_PROC is not None and APT_PROC.poll() is None:
+            for m in re.finditer(r"PM:PROGRESS:(\d+)", txt):
+                pct = int(m.group(1))
+        stage = ""
+        if "PM:PROGRESS:0" in txt or "Get:" in txt or "Ign:" in txt or "Hit:" in txt:
+            stage = "fetching"
+        if "Preparing to unpack" in txt or "Unpacking" in txt:
+            stage = "installing"
+        if "Setting up " in txt or "Processing triggers" in txt:
+            stage = "configuring"
+        return pct, stage
+
     def do_GET(self):
         path = urlparse(self.path).path
         if path == "/api/tools":
@@ -1308,7 +1357,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/ota/status":
             self._send(200, json.dumps(ota_status()).encode())
         elif path == "/api/apt/status":
-            self._send(200, json.dumps({"busy": self._apt_busy(), "log": self._apt_tail()}).encode())
+            pct, stage = self._apt_progress()
+            self._send(200, json.dumps({
+                "busy": self._apt_busy(), "log": self._apt_tail(),
+                "pct": pct, "stage": stage,
+            }).encode())
         elif path == "/api/wifi/scan":
             self._send(200, json.dumps(scan_wifi()).encode())
         elif path == "/api/term/status":
@@ -1407,6 +1460,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             apt_proc = subprocess.Popen(
                 "sudo -n apt-get update && sudo -n apt-get upgrade -y "
+                "-o APT::Status-Fd=2 "
                 "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold",
                 shell=True, stdout=open(APT_LOG, "w"), stderr=subprocess.STDOUT,
             )

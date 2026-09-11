@@ -241,8 +241,12 @@ function showSettings() {
   otaBtns.appendChild(otaUpd);
   const otaLog = el("div", "ota-log");
   otaLog.style.display = "none";
+  const otaBar = el("div", "ota-bar");
+  const otaFill = el("div", "ota-fill");
+  otaBar.appendChild(otaFill);
   otaCard.appendChild(otaMeta);
   otaCard.appendChild(otaBtns);
+  otaCard.appendChild(otaBar);
   otaCard.appendChild(otaLog);
   page.appendChild(otaCard);
 
@@ -251,20 +255,24 @@ function showSettings() {
   const aptMeta = el("div", "ota-meta");
   const aptBtn = el("button", "set-btn warn", "⬆ Upgrade packages");
   aptBtn.disabled = true;
+  const aptBar = el("div", "ota-bar");
+  const aptFill = el("div", "ota-fill");
+  aptBar.appendChild(aptFill);
   const aptLog = el("div", "ota-log");
   aptLog.style.display = "none";
   aptCard.appendChild(aptMeta);
   aptCard.appendChild(aptBtn);
+  aptCard.appendChild(aptBar);
   aptCard.appendChild(aptLog);
   page.appendChild(aptCard);
   c.appendChild(page);
 
   scanBtn.onclick = () => doWifiScan(scanBtn, netList, statusRow);
-  otaCheck.onclick = () => refreshOta(otaMeta, otaLog, otaUpd, otaCheck);
-  otaUpd.onclick = () => otaRun(otaMeta, otaLog, otaUpd, otaCheck);
-  aptBtn.onclick = () => aptRun(aptMeta, aptBtn, aptLog);
-  refreshOta(otaMeta, otaLog, otaUpd, otaCheck);
-  aptStatus(aptMeta, aptBtn, aptLog);
+  otaCheck.onclick = () => refreshOta(otaMeta, otaLog, otaUpd, otaCheck, otaBar, otaFill);
+  otaUpd.onclick = () => otaRun(otaMeta, otaLog, otaUpd, otaCheck, otaBar, otaFill);
+  aptBtn.onclick = () => aptRun(aptMeta, aptBtn, aptLog, aptBar, aptFill);
+  refreshOta(otaMeta, otaLog, otaUpd, otaCheck, otaBar, otaFill);
+  aptStatus(aptMeta, aptBtn, aptLog, aptBar, aptFill);
 
   Promise.all([api("/api/network"), api("/api/wifi/scan")]).then(([net, scan]) => {
     renderNetworkInfo(infoBody, net.info);
@@ -279,21 +287,44 @@ function showSettings() {
   });
 }
 
-function refreshOta(meta, logBox, updBtn, chkBtn) {
+function setProgressBar(bar, fill, pct) {
+  bar.style.display = "block";
+  if (pct == null) {
+    fill.classList.add("indet");
+    fill.style.width = "";
+  } else {
+    fill.classList.remove("indet");
+    fill.style.width = Math.max(2, Math.min(100, Number(pct))) + "%";
+  }
+}
+function hideProgressBar(bar, fill) {
+  bar.style.display = "none";
+  fill.classList.remove("indet");
+  fill.style.width = "";
+}
+
+function refreshOta(meta, logBox, updBtn, chkBtn, bar, fill) {
   api("/api/ota/status").then(s => {
     if (!s.installed) {
       meta.textContent = "OTA not enabled — reinstall from GitHub first.";
       updBtn.disabled = true;
+      hideProgressBar(bar, fill);
       return;
     }
+    if (s.busy) {
+      meta.textContent = "updating · " + (s.stage || "working");
+      setProgressBar(bar, fill, s.pct);
+      showOtaLog(logBox, s.log);
+      updBtn.disabled = true;
+      chkBtn.disabled = true;
+      setTimeout(() => refreshOta(meta, logBox, updBtn, chkBtn, bar, fill), 2000);
+      return;
+    }
+    hideProgressBar(bar, fill);
     const st = s.up_to_date ? "up to date" : "update available";
     meta.textContent = "v" + (s.version || "?") + " · local " + s.local_short + " · latest " + (s.remote_short || "—") + " · " + st;
     updBtn.disabled = s.busy || s.up_to_date;
     chkBtn.disabled = s.busy;
-    if (s.busy) {
-      showOtaLog(logBox, s.log);
-      setTimeout(() => refreshOta(meta, logBox, updBtn, chkBtn), 2000);
-    }
   }).catch(() => {
     meta.textContent = "backend unreachable";
   });
@@ -309,7 +340,7 @@ function showOtaLog(logBox, txt) {
   });
 }
 
-function otaRun(meta, logBox, updBtn, chkBtn) {
+function otaRun(meta, logBox, updBtn, chkBtn, bar, fill) {
   if (!confirm("Pull the latest version from GitHub and restart the device UI?")) return;
   updBtn.disabled = true;
   chkBtn.disabled = true;
@@ -317,13 +348,16 @@ function otaRun(meta, logBox, updBtn, chkBtn) {
     const t = setInterval(() => {
       api("/api/ota/status").then(s => {
         if (logBox.style.display === "none" && (s.log || "").trim()) showOtaLog(logBox, s.log);
-        if (!s.busy) {
+        if (s.busy) {
+          meta.textContent = "updating · " + (s.stage || "working");
+          setProgressBar(bar, fill, s.pct);
+        } else {
           clearInterval(t);
+          hideProgressBar(bar, fill);
           if (logBox.style.display === "none") showOtaLog(logBox, s.log);
           logBox.appendChild(el("div", "ota-line" + (r.ok ? " ok" : " err"), (r.ok ? "✓ " : "✗ ") + (r.msg || "done")));
-          updBtn.disabled = false;
-          chkBtn.disabled = false;
           meta.textContent = "v" + (s.version || "?") + " · local " + s.local_short + " · latest " + (s.remote_short || "—") + (s.up_to_date ? " · up to date" : " · update available");
+          setTimeout(() => refreshOta(meta, logBox, updBtn, chkBtn, bar, fill), 1500);
         }
       }).catch(() => {});
     }, 2500);
@@ -334,14 +368,16 @@ function otaRun(meta, logBox, updBtn, chkBtn) {
   });
 }
 
-function aptStatus(meta, btn, logBox) {
+function aptStatus(meta, btn, logBox, bar, fill) {
   api("/api/apt/status").then(s => {
     if (s.busy) {
-      meta.textContent = "upgrading…";
-      btn.disabled = true;
+      meta.textContent = "upgrading · " + (s.stage || "working");
+      setProgressBar(bar, fill, s.pct);
       showOtaLog(logBox, s.log);
-      setTimeout(() => aptStatus(meta, btn, logBox), 2500);
+      btn.disabled = true;
+      setTimeout(() => aptStatus(meta, btn, logBox, bar, fill), 2500);
     } else {
+      hideProgressBar(bar, fill);
       btn.disabled = false;
       const n = (s.log || "").split("\n").filter(Boolean).length;
       meta.textContent = n ? "idle · last upgrade " + n + " log lines" : "idle";
@@ -351,20 +387,23 @@ function aptStatus(meta, btn, logBox) {
   });
 }
 
-function aptRun(meta, btn, logBox) {
+function aptRun(meta, btn, logBox, bar, fill) {
   if (!confirm("Run a full system upgrade? This can take several minutes — the UI stays up.")) return;
   btn.disabled = true;
   meta.textContent = "starting…";
+  setProgressBar(bar, fill, null);
   api("/api/apt/upgrade", "POST").then(r => {
     if (!r.ok && r.error) {
       meta.textContent = r.error;
+      hideProgressBar(bar, fill);
       btn.disabled = false;
       return;
     }
-    meta.textContent = "upgrading…";
-    setTimeout(() => aptStatus(meta, btn, logBox), 2000);
+    meta.textContent = "upgrading · working";
+    setTimeout(() => aptStatus(meta, btn, logBox, bar, fill), 2000);
   }).catch(e => {
     meta.textContent = "start failed: " + e;
+    hideProgressBar(bar, fill);
     btn.disabled = false;
   });
 }
