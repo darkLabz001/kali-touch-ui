@@ -268,7 +268,7 @@ function showSettings() {
   c.appendChild(page);
 
   scanBtn.onclick = () => doWifiScan(scanBtn, netList, statusRow);
-  otaCheck.onclick = () => refreshOta(otaMeta, otaLog, otaUpd, otaCheck, otaBar, otaFill);
+  otaCheck.onclick = () => { otaMeta.textContent = "checking…"; refreshOta(otaMeta, otaLog, otaUpd, otaCheck, otaBar, otaFill); };
   otaUpd.onclick = () => otaRun(otaMeta, otaLog, otaUpd, otaCheck, otaBar, otaFill);
   aptBtn.onclick = () => aptRun(aptMeta, aptBtn, aptLog, aptBar, aptFill);
   refreshOta(otaMeta, otaLog, otaUpd, otaCheck, otaBar, otaFill);
@@ -340,8 +340,34 @@ function showOtaLog(logBox, txt) {
   });
 }
 
+function armConfirm(btn, label, action) {
+  if (btn.dataset.armed === "1") {
+    delete btn.dataset.armed;
+    btn.classList.remove("confirming");
+    btn.textContent = label;
+    action();
+    return;
+  }
+  btn.dataset.armed = "1";
+  btn.classList.add("confirming");
+  btn.textContent = "Tap again to confirm";
+  setTimeout(() => {
+    if (btn.dataset.armed === "1") {
+      delete btn.dataset.armed;
+      btn.classList.remove("confirming");
+      btn.textContent = label;
+    }
+  }, 3500);
+}
+
 function otaRun(meta, logBox, updBtn, chkBtn, bar, fill) {
-  if (!confirm("Pull the latest version from GitHub and restart the device UI?")) return;
+  if (updBtn.dataset.armed !== "1") {
+    armConfirm(updBtn, "⬇ Update", () => otaRun(meta, logBox, updBtn, chkBtn, bar, fill));
+    return;
+  }
+  delete updBtn.dataset.armed;
+  updBtn.classList.remove("confirming");
+  updBtn.textContent = "⬇ Update";
   updBtn.disabled = true;
   chkBtn.disabled = true;
   api("/api/ota/update", "POST").then(r => {
@@ -388,7 +414,13 @@ function aptStatus(meta, btn, logBox, bar, fill) {
 }
 
 function aptRun(meta, btn, logBox, bar, fill) {
-  if (!confirm("Run a full system upgrade? This can take several minutes — the UI stays up.")) return;
+  if (btn.dataset.armed !== "1") {
+    armConfirm(btn, "⬆ Upgrade packages", () => aptRun(meta, btn, logBox, bar, fill));
+    return;
+  }
+  delete btn.dataset.armed;
+  btn.classList.remove("confirming");
+  btn.textContent = "⬆ Upgrade packages";
   btn.disabled = true;
   meta.textContent = "starting…";
   setProgressBar(bar, fill, null);

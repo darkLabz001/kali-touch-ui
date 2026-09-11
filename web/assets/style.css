@@ -379,6 +379,8 @@ body.kbd-open .console { max-height: 24vh; }
 }
 .set-btn:disabled { opacity: 0.45; }
 .set-btn.warn { background: linear-gradient(160deg, #ffd54f, #f0a22c); color: #241300; }
+.set-btn.confirming { animation: btn-pulse 0.9s infinite; }
+@keyframes btn-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 .set-btn.danger { background: linear-gradient(160deg, #ff5a5a, #c12b2b); color: #fff; }
 .set-btn.scanned { background: linear-gradient(160deg, #3aa0ff, #2468c9); color: #fff; }
 
