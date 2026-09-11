@@ -273,7 +273,7 @@ function refreshOta(meta, logBox, updBtn, chkBtn) {
       return;
     }
     const st = s.up_to_date ? "up to date" : "update available";
-    meta.textContent = "local " + s.local_short + " · latest " + (s.remote_short || "—") + " · " + st;
+    meta.textContent = "v" + (s.version || "?") + " · local " + s.local_short + " · latest " + (s.remote_short || "—") + " · " + st;
     updBtn.disabled = s.busy || s.up_to_date;
     chkBtn.disabled = s.busy;
     if (s.busy) {
@@ -309,7 +309,7 @@ function otaRun(meta, logBox, updBtn, chkBtn) {
           logBox.appendChild(el("div", "ota-line" + (r.ok ? " ok" : " err"), (r.ok ? "✓ " : "✗ ") + (r.msg || "done")));
           updBtn.disabled = false;
           chkBtn.disabled = false;
-          meta.textContent = "local " + s.local_short + " · latest " + (s.remote_short || "—") + (s.up_to_date ? " · up to date" : " · update available");
+          meta.textContent = "v" + (s.version || "?") + " · local " + s.local_short + " · latest " + (s.remote_short || "—") + (s.up_to_date ? " · up to date" : " · update available");
         }
       }).catch(() => {});
     }, 2500);

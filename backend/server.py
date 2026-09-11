@@ -1118,6 +1118,7 @@ OTA_REPO = "https://github.com/darkLabz001/kali-touch-ui.git"
 OTA_BRANCH = "main"
 OTA_DIR = "/opt/kali-touch-ui"
 OTA_LOG = "/tmp/ota.log"
+APP_VERSION = "1.0.0"
 _ota_busy = False
 _ota_lock = threading.Lock()
 
@@ -1164,6 +1165,7 @@ def ota_status():
             log = f.read()
     return {
         "ok": True,
+        "version": APP_VERSION,
         "method": "git" if local else "none",
         "local": local,
         "local_short": local[:7] if local else "",
