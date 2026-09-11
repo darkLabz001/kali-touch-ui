@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Kali Touch UI</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div id="app">
+    <div class="topbar">
+      <button class="btn-back" id="btn-back">‹</button>
+      <div class="brand">KALI <span>TOUCH</span></div>
+      <div class="spacer"></div>
+      <button class="btn-gear" id="btn-settings">⚙</button>
+      <button class="btn-gear" id="btn-term">≫</button>
+      <div class="badge online">● LIVE</div>
+    </div>
+    <div class="sysline" id="sysline">
+      <span class="sl-clock" id="sl-clock">--:--</span>
+      <span class="sl-net" id="sl-net">fetching network…</span>
+      <span class="sl-tmp" id="sl-tmp">--°C</span>
+    </div>
+    <div class="content" id="content"></div>
+  </div>
+  <div class="boot-splash" id="boot-splash">
+    <div class="ds-bg"></div>
+    <div class="ds-top">// SECURE THIS NETWORK <span class="ds-node">NODE 07</span></div>
+    <div class="ds-title">DARKSEC<span class="ds-cursor">_</span></div>
+    <div class="ds-labs">labs</div>
+    <div class="ds-tagline">WIRELESS INTELLIGENCE PLATFORM</div>
+    <div class="ds-status" id="ds-status">booting wireless stack…</div>
+    <div class="ds-bar"><div class="ds-bar-fill" id="ds-fill"></div></div>
+    <div class="ds-bootdots" id="ds-bootdots"><i></i><i></i><i></i><i></i><i></i></div>
+    <div class="boot-skip" id="boot-skip">tap to skip</div>
+  </div>
+  <script src="assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Kali Touch UI Kiosk
+Comment=Boot straight into the Kali Touch UI on the touchscreen
+Exec=/opt/kali-touch-ui/scripts/kiosk.sh
+Terminal=false
+X-GNOME-Autostart-enabled=true
+X-KDE-autostart-after=panel

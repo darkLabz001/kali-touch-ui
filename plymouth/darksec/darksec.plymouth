@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=DarkSec Labs
+Description=DarkSec Labs boot screen for Kali Touch UI
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/darksec
+ScriptFile=/usr/share/plymouth/themes/darksec/darksec.script

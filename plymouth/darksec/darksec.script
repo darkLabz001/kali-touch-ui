@@ -1,0 +1,28 @@
+# DarkSec Labs plymouth script theme
+# Dark branded boot screen with a moving scanline.
+
+Window.SetBackgroundTopColor (0.01, 0.04, 0.025);
+Window.SetBackgroundBottomColor (0.0, 0.0, 0.0);
+
+boot_image = Image ("darksec.png");
+
+sprite = Sprite ();
+sprite.SetImage (boot_image);
+sprite.SetX (Window.GetWidth () / 2 - boot_image.GetWidth () / 2);
+sprite.SetY (Window.GetHeight () / 2 - boot_image.GetHeight () / 2);
+
+scan_image = Image ("scanline.png");
+scanner = Sprite ();
+scanner.SetImage (scan_image);
+scanner.SetX (Window.GetWidth () / 2 - scan_image.GetWidth () / 2);
+
+y = 0;
+dir = 1;
+
+while (true) {
+    scanner.SetY (y);
+    y = y + dir * 6;
+    if (y > 755) { dir = -1; }
+    if (y < 0) { dir = 1; }
+    sleep (0.03);
+}

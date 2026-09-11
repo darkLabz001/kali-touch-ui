@@ -1,0 +1,16 @@
+[Unit]
+Description=Kali Touch UI backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kali
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/opt/kali-touch-ui
+ExecStart=/usr/bin/python3 /opt/kali-touch-ui/backend/server.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+#!/bin/bash
+# Kali Touch kiosk session: orient the panel, then paint the boot still on
+# the X root so the gap between splash and Chromium is never a black screen.
+export DISPLAY=:0
+/usr/bin/xrandr --output HDMI-1 --rotate inverted
+if [ -f /opt/kali-touch-ui/web/media/boot-frame.png ]; then
+    /usr/bin/convert /opt/kali-touch-ui/web/media/boot-frame.png -resize 480x800\! /tmp/kali-touch-bg.png
+    /usr/bin/display -window root /tmp/kali-touch-bg.png 2>/dev/null
+fi
+
+# Kiosk launcher (expects to replace this session process).
+exec /opt/kali-touch-ui/scripts/kiosk.sh
