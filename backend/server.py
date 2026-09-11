@@ -66,6 +66,14 @@ TOOLS = [
     ("wireless", "airodump-ng", "airodump-ng {target}", True),
     ("wireless", "aircrack-ng", "aircrack-ng {target}", False),
     ("wireless", "Reaver", "reaver -i {target} -b {bssid} -vv", True),
+    # Bluetooth (bluez / bluez-utils)
+    ("bt", "Bluetooth Device list", "bluetoothctl devices", False),
+    ("bt", "Bluetooth Paired", "bluetoothctl paired-devices", False),
+    ("bt", "Bluetooth Scan (classic)", "timeout 15 bluetoothctl scan on", True),
+    ("bt", "BLE LeScan (advertising)", "timeout 15 hcitool lescan", True),
+    ("bt", "L2ping target", "l2ping -c 4 {target}", True),
+    ("bt", "Bluetooth iface info", "hciconfig -a && hcitool dev", True),
+    ("bt", "SDP browse target", "sdptool browse {target}", True),
     # SMB / Windows
     ("smb", "Enum4linux", "enum4linux {target}", False),
     ("smb", "smbclient list", "smbclient -L //{target}", False),
@@ -98,6 +106,7 @@ SECTIONS = [
     ("web", "Web Attacks", "globe"),
     ("auth", "Brute Force", "key"),
     ("wireless", "WiFi Attacks", "wifi"),
+    ("bt", "Bluetooth", "bt"),
     ("crack", "Password Crack", "lock"),
     ("smb", "SMB / Win", "shield"),
     ("util", "Utility", "tool"),
@@ -150,6 +159,8 @@ INTERACTIVE = [
 LAUNCH_GROUPS = ["WiFi", "BLE", "Net", "Web", "Auth", "Crack"]
 
 INSTALL_LOG = "/tmp/kali-ui-install.log"
+APT_LOG = "/tmp/kali-ui-apt.log"
+APT_PROC = None
 
 SAFE_PATTERNS = re.compile(r"^[A-Za-z0-9._:/:\[\]-]+$")
 bssid = ""
@@ -1241,6 +1252,24 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    @staticmethod
+    def _apt_busy():
+        global APT_PROC
+        if APT_PROC is not None and APT_PROC.poll() is None:
+            return True
+        if subprocess.run(["pgrep", "-x", "apt-get"], stdout=subprocess.DEVNULL).returncode == 0:
+            return True
+        if subprocess.run(["pgrep", "-x", "dpkg"], stdout=subprocess.DEVNULL).returncode == 0:
+            return True
+        return False
+
+    @staticmethod
+    def _apt_tail():
+        if os.path.isfile(APT_LOG):
+            with open(APT_LOG, "rb") as f:
+                return f.read(6000).decode("utf-8", "replace")
+        return ""
+
     def do_GET(self):
         path = urlparse(self.path).path
         if path == "/api/tools":
@@ -1278,6 +1307,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(sysinfo()).encode())
         elif path == "/api/ota/status":
             self._send(200, json.dumps(ota_status()).encode())
+        elif path == "/api/apt/status":
+            self._send(200, json.dumps({"busy": self._apt_busy(), "log": self._apt_tail()}).encode())
         elif path == "/api/wifi/scan":
             self._send(200, json.dumps(scan_wifi()).encode())
         elif path == "/api/term/status":
@@ -1369,6 +1400,18 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/ota/update":
             res = ota_update()
             self._send(200 if res.get("ok") else 409, json.dumps(res).encode())
+        elif path == "/api/apt/upgrade":
+            global APT_PROC
+            if self._apt_busy():
+                self._send(409, json.dumps({"error": "apt is busy"}).encode())
+                return
+            apt_proc = subprocess.Popen(
+                "sudo -n apt-get update && sudo -n apt-get upgrade -y "
+                "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold",
+                shell=True, stdout=open(APT_LOG, "w"), stderr=subprocess.STDOUT,
+            )
+            APT_PROC = apt_proc
+            self._send(200, json.dumps({"ok": True}).encode())
         elif path == "/api/term/start":
             TERM.start(init_cmd=body.get("cmd") or None, cwd=body.get("cwd") or None)
             self._send(200, json.dumps({"ok": True, "running": TERM.exited is False}).encode())
@@ -1399,7 +1442,7 @@ class Handler(BaseHTTPRequestHandler):
             if not pkg:
                 self._send(404, json.dumps({"error": "unknown tool"}).encode())
                 return
-            if subprocess.run(["pgrep", "-x", "apt-get"], stdout=subprocess.DEVNULL).returncode == 0:
+            if self._apt_busy():
                 self._send(409, json.dumps({"error": "apt is busy"}).encode())
                 return
             subprocess.Popen(

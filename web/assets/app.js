@@ -2,7 +2,7 @@ const state = { data: null, section: null, tool: null, running: false, evtSource
 
 const icons = {
   radar: "◉", search: "◎", globe: "◍", key: "❋", wifi: "✱",
-  lock: "▣", shield: "◆", tool: "⚒", root: "⚑", settings: "⚙",
+  lock: "▣", shield: "◆", tool: "⚒", root: "⚑", settings: "⚙", bt: "◉",
 };
 
 function el(tag, cls, text) {
@@ -245,12 +245,26 @@ function showSettings() {
   otaCard.appendChild(otaBtns);
   otaCard.appendChild(otaLog);
   page.appendChild(otaCard);
+
+  const aptCard = el("div", "set-card");
+  aptCard.appendChild(el("div", "set-title", "⬆ System Upgrade"));
+  const aptMeta = el("div", "ota-meta");
+  const aptBtn = el("button", "set-btn warn", "⬆ Upgrade packages");
+  aptBtn.disabled = true;
+  const aptLog = el("div", "ota-log");
+  aptLog.style.display = "none";
+  aptCard.appendChild(aptMeta);
+  aptCard.appendChild(aptBtn);
+  aptCard.appendChild(aptLog);
+  page.appendChild(aptCard);
   c.appendChild(page);
 
   scanBtn.onclick = () => doWifiScan(scanBtn, netList, statusRow);
   otaCheck.onclick = () => refreshOta(otaMeta, otaLog, otaUpd, otaCheck);
   otaUpd.onclick = () => otaRun(otaMeta, otaLog, otaUpd, otaCheck);
+  aptBtn.onclick = () => aptRun(aptMeta, aptBtn, aptLog);
   refreshOta(otaMeta, otaLog, otaUpd, otaCheck);
+  aptStatus(aptMeta, aptBtn, aptLog);
 
   Promise.all([api("/api/network"), api("/api/wifi/scan")]).then(([net, scan]) => {
     renderNetworkInfo(infoBody, net.info);
@@ -317,6 +331,41 @@ function otaRun(meta, logBox, updBtn, chkBtn) {
     meta.textContent = "update failed: " + e;
     updBtn.disabled = false;
     chkBtn.disabled = false;
+  });
+}
+
+function aptStatus(meta, btn, logBox) {
+  api("/api/apt/status").then(s => {
+    if (s.busy) {
+      meta.textContent = "upgrading…";
+      btn.disabled = true;
+      showOtaLog(logBox, s.log);
+      setTimeout(() => aptStatus(meta, btn, logBox), 2500);
+    } else {
+      btn.disabled = false;
+      const n = (s.log || "").split("\n").filter(Boolean).length;
+      meta.textContent = n ? "idle · last upgrade " + n + " log lines" : "idle";
+    }
+  }).catch(() => {
+    meta.textContent = "backend unreachable";
+  });
+}
+
+function aptRun(meta, btn, logBox) {
+  if (!confirm("Run a full system upgrade? This can take several minutes — the UI stays up.")) return;
+  btn.disabled = true;
+  meta.textContent = "starting…";
+  api("/api/apt/upgrade", "POST").then(r => {
+    if (!r.ok && r.error) {
+      meta.textContent = r.error;
+      btn.disabled = false;
+      return;
+    }
+    meta.textContent = "upgrading…";
+    setTimeout(() => aptStatus(meta, btn, logBox), 2000);
+  }).catch(e => {
+    meta.textContent = "start failed: " + e;
+    btn.disabled = false;
   });
 }
 

@@ -24,7 +24,9 @@ fi
 echo "[*] Installing system packages (chromium, python3, git)…"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y --no-install-recommends chromium python3 git || true
+apt-get install -y --no-install-recommends chromium python3 git bluez bluez-utils bluez-tools 2>/dev/null || \
+    apt-get install -y --no-install-recommends chromium python3 git bluez bluez-utils || true
+systemctl enable --now bluetooth >/dev/null 2>&1 || true
 
 if [ -n "${WIFI_SSID:-}" ] && [ -n "${WIFI_PASS:-}" ]; then
     echo "[*] Provisioning WiFi '$WIFI_SSID'…"
