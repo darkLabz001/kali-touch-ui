@@ -11,10 +11,12 @@ if [ -n "${DISPLAY:-}" ]; then
 fi
 
 # Force the HDMI output and panel into a known-on state: some 4" HDMI DPI
-# panels come up dark in standby and only wake on a fresh modeset.
+# panels come up dark in standby and only wake on a fresh modeset. Use the
+# panel's exact config.txt timing (480x800 @ 60Hz CVT) — deviating from it
+# (e.g. refresh rate or pixel clock) makes the panel go black.
 vcgencmd display_power 1 >/dev/null 2>&1 || true
 if command -v xrandr >/dev/null 2>&1 && [ -n "${DISPLAY:-}" ]; then
-    xrandr --output HDMI-1 --mode 480x800 --rate 62.29 2>/dev/null || xrandr --output HDMI-1 --auto 2>/dev/null || true
+    xrandr --output HDMI-1 --mode 480x800 --rate 60 2>/dev/null || true
     xset dpms force on >/dev/null 2>&1 || true
 fi
 
