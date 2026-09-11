@@ -1,0 +1,6 @@
+[Unit]
+Description=Kali Touch UI WiFi watchdog
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/wifi-watchdog.sh

@@ -36,6 +36,30 @@ if [ -n "${WIFI_SSID:-}" ] && [ -n "${WIFI_PASS:-}" ]; then
                connection.autoconnect yes 802-11-wireless.cloned-mac-address permanent
 fi
 
+echo "[*] Storing WiFi connections with priority (new ones win over defaults)…"
+:
+# Keep the last provisioned connection preferred so watchdog/auto-connect pick it.
+nmcli -g UUID connection show "$WIFI_SSID" 2>/dev/null | while read -r uuid; do
+    nmcli connection modify "$uuid" connection.autoconnect-priority 300 2>/dev/null || true
+done
+
+echo "[*] Disabling WiFi power-save (drops while roaming/scanning)…"
+install -m 0644 /dev/stdin /etc/NetworkManager/conf.d/wifi-powersave-off.conf <<'EOF'
+[connection]
+wifi.powersave = 2
+EOF
+nmcli connection reload >/dev/null 2>&1 || true
+for dev in $(nmcli -t -f DEVICE,TYPE device 2>/dev/null | awk -F: '$2=="wifi"{print $1}'); do
+    iw dev "$dev" set power_save off >/dev/null 2>&1 || true
+done
+
+echo "[*] Installing WiFi reconnect watchdog…"
+install -m 0755 "$APP/scripts/wifi-watchdog.sh" /usr/local/bin/wifi-watchdog.sh
+install -m 0644 "$APP/scripts/wifi-watchdog.service" /etc/systemd/system/wifi-watchdog.service
+install -m 0644 "$APP/scripts/wifi-watchdog.timer" /etc/systemd/system/wifi-watchdog.timer
+systemctl daemon-reload
+systemctl enable --now wifi-watchdog.timer >/dev/null 2>&1 || true
+
 echo "[*] Installing app as a git clone (OTA-ready)…"
 rm -rf "$APP"
 git clone --quiet "$REPO" "$APP"
@@ -64,6 +88,33 @@ install -m 0644 "$APP/scripts/kali-touch-kiosk.desktop" "$AUTOSTART_DIR/"
 echo "[*] Installing resilient kiosk fallback…"
 install -D -m 0755 "$APP/scripts/kiosk.sh" /usr/local/share/kali-touch/kiosk.sh
 install -m 0755 "$APP/scripts/kali-touch-session" /usr/local/bin/kali-touch-session
+
+echo "[*] Hardening 4-inch panel timings (boots → UI at 480x800@60, no black screens)…"
+PANEL_CFG=""
+for c in /boot/firmware/config.txt /boot/config.txt; do
+    if grep -q '^hdmi_cvt=480 800' "$c" 2>/dev/null; then
+        PANEL_CFG="$c"; break
+    fi
+done
+if [ -z "$PANEL_CFG" ]; then
+    for c in /boot/firmware/config.txt /boot/config.txt; do
+        if [ -e "$c" ] && [ -w "$(dirname "$c")" ]; then
+            PANEL_CFG="$c"; break
+        fi
+    done
+fi
+if [ -n "$PANEL_CFG" ]; then
+    sed -i 's/^disable_fw_kms_setup=1/disable_fw_kms_setup=0/' "$PANEL_CFG"
+    if ! grep -q '^hdmi_cvt=480 800 60' "$PANEL_CFG"; then
+        printf '\n# --- 4inch HDMI LCD: force 480x800@60, survive reboots (no black screen) ---\nhdmi_group=2\nhdmi_mode=87\nhdmi_cvt=480 800 60 6 0 0 0\nhdmi_drive=1\nhdmi_force_hotplug=1\nhdmi_ignore_edid=0xa00002\ndtoverlay=ads7846_waveshare,penirq=25,xmin=150,xmax=3900,ymin=100,ymax=3950,speed=50000\n' >> "$PANEL_CFG"
+    fi
+fi
+for c in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
+    if [ -e "$c" ]; then
+        grep -q 'video=HDMI-A-1:480x800@60' "$c" || printf ' video=HDMI-A-1:480x800@60' >> "$c"
+        break
+    fi
+done
 
 echo
 echo "[*] Setup complete."

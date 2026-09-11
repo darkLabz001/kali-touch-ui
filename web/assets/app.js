@@ -572,6 +572,26 @@ function showRun(tool) {
   if (tool.root) head.appendChild(el("div", "hint", "⚠ requires root"));
   page.appendChild(head);
 
+  const runBtn = el("button", "big-btn run", "▶ RUN");
+  const stopBtn = el("button", "big-btn stop", "■ STOP");
+  const row = el("div", "run-row");
+  stopBtn.disabled = true;
+  runBtn.onclick = () => startRun(tool, runBtn, stopBtn);
+  stopBtn.onclick = () => stopRun(stopBtn);
+
+  if (tool.need && tool.pkg) {
+    const banner = el("div", "missing-banner");
+    const btitle = el("div", "missing-title", "⚠ " + tool.label + " is not installed");
+    const binfo = el("div", "missing-sub", "binary “" + tool.bin + "” missing");
+    const ibtn = el("button", "big-btn inst", "⬇ Install " + tool.pkg);
+    ibtn.onclick = () => installTool(tool, btitle, ibtn, binfo, runBtn, banner);
+    banner.appendChild(btitle);
+    banner.appendChild(binfo);
+    banner.appendChild(ibtn);
+    page.appendChild(banner);
+    runBtn.disabled = true;
+  }
+
   tool.params.forEach(p => {
     const f = el("div", "field");
     f.dataset.param = p;
@@ -599,13 +619,6 @@ function showRun(tool) {
     page.appendChild(f);
   });
 
-  const row = el("div", "run-row");
-  const runBtn = el("button", "big-btn run", "▶ RUN");
-  const stopBtn = el("button", "big-btn stop", "■ STOP");
-  stopBtn.disabled = true;
-  runBtn.onclick = () => startRun(tool, runBtn, stopBtn);
-  stopBtn.onclick = () => stopRun(stopBtn);
-  row.appendChild(runBtn);
   row.appendChild(stopBtn);
   page.appendChild(row);
 
@@ -638,6 +651,59 @@ function stopRun(stopBtn) {
   stopBtn.disabled = true;
   if (state.evtSource) state.evtSource.close();
   state.running = false;
+}
+
+function installTool(tool, title, btn, sub, runBtn, banner) {
+  if (btn.dataset.armed !== "1") {
+    armConfirm(btn, "⬇ Install " + tool.pkg, () => installTool(tool, title, btn, sub, runBtn, banner));
+    return;
+  }
+  delete btn.dataset.armed;
+  btn.classList.remove("confirming");
+  title.textContent = "installing " + tool.pkg + " …";
+  sub.textContent = "";
+  btn.textContent = "…";
+  btn.disabled = true;
+  const console = document.querySelector(".run-page .console");
+  api("/api/install", "POST", { pkg: tool.pkg }).then(() => {
+    const t = setInterval(() => {
+      api("/api/apt/status").then(s => {
+        if (s.busy) {
+          const p = s.pct != null ? s.pct + "%" : (s.stage || "…");
+          btn.textContent = "installing " + tool.pkg + " · " + p;
+          const lines = (s.log || "").split("\n").filter(Boolean);
+          if (typeof console !== "undefined" && console) console.textContent = lines.slice(-24).join("\n");
+        } else {
+          clearInterval(t);
+          api("/api/tools").then(d => {
+            const fresh = (d.tools || []).find(x => x.section === tool.section && x.label === tool.label)
+                      || { need: true, pkg: tool.pkg };
+            tool.need = fresh.need;
+            tool.pkg = fresh.pkg;
+            tool.bin = fresh.bin;
+            if (fresh.need) {
+              title.textContent = "⚠ still missing — install failed (see console)";
+              btn.textContent = "⬇ Retry " + tool.pkg;
+              btn.disabled = false;
+              const lines = (s.log || "").split("\n").filter(Boolean);
+              if (console) console.textContent = lines.slice(-24).join("\n");
+            } else {
+              banner.style.display = "none";
+              console.textContent = "✓ " + tool.pkg + " installed — ready to run.";
+              runBtn.disabled = false;
+            }
+          }).catch(() => {
+            banner.style.display = "none";
+            runBtn.disabled = false;
+          });
+        }
+      }).catch(() => {});
+    }, 2500);
+  }).catch(e => {
+    title.textContent = "install failed: " + e;
+    btn.textContent = "⬇ Retry " + tool.pkg;
+    btn.disabled = false;
+  });
 }
 
 function openStream(console) {

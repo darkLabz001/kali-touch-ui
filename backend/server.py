@@ -158,6 +158,34 @@ INTERACTIVE = [
 
 LAUNCH_GROUPS = ["WiFi", "BLE", "Net", "Web", "Auth", "Crack"]
 
+# Binary -> Debian package for TOOLS entries whose package name != first token.
+PACKAGE_FOR = {
+    "theHarvester": "theharvester",
+    "dig": "dnsutils",
+    "iwlist": "wireless-tools",
+    "airmon-ng": "aircrack-ng",
+    "airodump-ng": "aircrack-ng",
+    "aireplay-ng": "aircrack-ng",
+    "aircrack-ng": "aircrack-ng",
+    "hcitool": "bluez",
+    "hciconfig": "bluez",
+    "sdptool": "bluez",
+    "l2ping": "bluez",
+    "bluetoothctl": "bluez",
+}
+
+
+def tool_bin(cmd):
+    try:
+        return shlex.split(cmd)[0]
+    except (ValueError, IndexError):
+        return ""
+
+
+def tool_pkg(cmd):
+    b = tool_bin(cmd)
+    return PACKAGE_FOR.get(b, b.lower()) if b else ""
+
 INSTALL_LOG = "/tmp/kali-ui-install.log"
 APT_LOG = "/tmp/kali-ui-apt.log"
 APT_PROC = None
@@ -1303,6 +1331,18 @@ class Handler(BaseHTTPRequestHandler):
         return ""
 
     @staticmethod
+    def _apt_start(chain):
+        global APT_PROC
+        if Handler._apt_busy():
+            return False
+        cmd = ("sudo -n /usr/bin/apt-get " + chain +
+               " -o APT::Status-Fd=2 "
+               "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold")
+        APT_PROC = subprocess.Popen(
+            cmd, shell=True, stdout=open(APT_LOG, "w"), stderr=subprocess.STDOUT)
+        return True
+
+    @staticmethod
     def _apt_progress():
         txt = Handler._apt_tail()
         pct = None
@@ -1337,7 +1377,14 @@ class Handler(BaseHTTPRequestHandler):
                     params.append("wordlist")
                 if "{hashmode}" in c:
                     params.append("hashmode")
-                tools.append({"section": s, "label": l, "root": r, "params": params})
+                bin_ = tool_bin(c)
+                need = bool(bin_) and shutil.which(bin_) is None
+                tools.append({
+                    "section": s, "label": l, "root": r, "params": params,
+                    "bin": bin_ if need else None,
+                    "pkg": (tool_pkg(c) if need else None),
+                    "need": need,
+                })
             launchers = []
             for lid, gp, lab, ico, bin_, root, pkg in INTERACTIVE:
                 path = shutil.which(bin_)
@@ -1454,18 +1501,18 @@ class Handler(BaseHTTPRequestHandler):
             res = ota_update()
             self._send(200 if res.get("ok") else 409, json.dumps(res).encode())
         elif path == "/api/apt/upgrade":
-            global APT_PROC
-            if self._apt_busy():
+            if not self._apt_start("update && /usr/bin/apt-get upgrade -y"):
                 self._send(409, json.dumps({"error": "apt is busy"}).encode())
-                return
-            apt_proc = subprocess.Popen(
-                "sudo -n apt-get update && sudo -n apt-get upgrade -y "
-                "-o APT::Status-Fd=2 "
-                "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold",
-                shell=True, stdout=open(APT_LOG, "w"), stderr=subprocess.STDOUT,
-            )
-            APT_PROC = apt_proc
-            self._send(200, json.dumps({"ok": True}).encode())
+            else:
+                self._send(200, json.dumps({"ok": True}).encode())
+        elif path == "/api/install":
+            pkg = body.get("pkg", "")
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+-]*", pkg):
+                self._send(400, json.dumps({"error": "invalid package"}).encode())
+            elif not self._apt_start("install -y --no-install-recommends " + pkg):
+                self._send(409, json.dumps({"error": "apt is busy"}).encode())
+            else:
+                self._send(200, json.dumps({"ok": True, "pkg": pkg}).encode())
         elif path == "/api/term/start":
             TERM.start(init_cmd=body.get("cmd") or None, cwd=body.get("cwd") or None)
             self._send(200, json.dumps({"ok": True, "running": TERM.exited is False}).encode())

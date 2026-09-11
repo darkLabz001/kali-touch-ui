@@ -316,6 +316,19 @@ body.kbd-open .console { max-height: 24vh; }
 .big-btn.run { background: linear-gradient(160deg, #32f04e, #1d8f2e); }
 .big-btn.stop { background: linear-gradient(160deg, #ff5a5a, #c12b2b); color: #fff; }
 .big-btn.stop:disabled { opacity: 0.4; }
+.big-btn.inst { background: linear-gradient(160deg, #22d3ee, #0e7490); color: #04262e; }
+.big-btn.inst:disabled { opacity: 0.55; }
+
+.missing-banner {
+  background: rgba(255, 82, 82, 0.10);
+  border: 1px solid rgba(255, 82, 82, 0.45);
+  border-radius: 14px;
+  padding: 14px;
+  margin: 10px 0;
+}
+.missing-title { color: #ff8f8f; font-weight: 700; }
+.missing-sub { color: #9fb1bf; font-size: 13px; margin: 4px 0 12px; }
+.missing-banner .big-btn { padding: 13px; font-size: 16px; }
 
 .console {
   background: #05070a;
