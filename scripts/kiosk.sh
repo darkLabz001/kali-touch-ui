@@ -42,8 +42,11 @@ while true; do
         --noerrdialogs \
         --disable-infobars \
         --disable-session-crashed-bubble \
+        --disable-component-update \
         --no-first-run \
         --check-for-update-interval=31536000 \
+        --hide-scrollbars \
+        --disable-features=TranslateUI,AutofillServerCommunication,MediaRouter \
         --touch-events=enabled --disable-gpu --disable-gpu-compositing --use-gl=swiftshader --disable-software-rasterizer=0 --enable-unsafe-swiftshader --password-store=basic \
         --disable-pinch \
         --overscroll-history-navigation-disabled \
@@ -52,13 +55,14 @@ while true; do
         --app="$URL" 2>/tmp/kali-touch-kiosk.log &
     BROWSER_PID=$!
 
-    # Keep the kiosk window exactly edge-to-edge at 480x800 (xfwm4 adds a
-    # frame otherwise) while the browser runs, and detect if it dies.
+    # Keep the kiosk window exactly edge-to-edge at 480x800 with no WM frame
+    # (xfwm4 adds one otherwise) and no title bar, and detect if the browser dies.
     while kill -0 "$BROWSER_PID" 2>/dev/null; do
         sleep 3
         WID=$(DISPLAY=:0 xdotool search --name "Kali Touch UI" 2>/dev/null | head -1)
         if [ -n "$WID" ]; then
             DISPLAY=:0 xdotool windowraise "$WID" windowsize "$WID" 480 800 windowmove "$WID" 0 0 2>/dev/null
+            DISPLAY=:0 xprop -id "$WID" -f _MOTIF_WM_HINTS 32c -set _MOTIF_WM_HINTS 0x2,0x0,0x0,0x0,0x0 2>/dev/null
         fi
     done
 

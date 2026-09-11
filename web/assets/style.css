@@ -29,6 +29,11 @@ html, body {
   -webkit-user-select: none;
 }
 
+/* touch-only device: no mouse cursor anywhere */
+html, body, * {
+  cursor: none !important;
+}
+
 #app {
   height: 100vh;
   display: flex;
