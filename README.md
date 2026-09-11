@@ -35,6 +35,13 @@ That installs every dependency, the backend service, auto-login, the fullscreen
 kiosk, and a git clone at `/opt/kali-touch-ui` so **OTA updates** in *Settings →
 OTA Update* just work. It reboots you into the UI.
 
+To also join a WiFi/hotspot on first boot (e.g. your phone's hotspot), pass it
+at install time — it's **not** baked into this repo:
+
+```bash
+sudo WIFI_SSID='iPhone' WIFI_PASS='your-hotspot-password' bash -c 'curl -sSL https://raw.githubusercontent.com/darkLabz001/kali-touch-ui/main/scripts/setup.sh | bash'
+```
+
 First boot only: enable SSH / join WiFi for headless access (see [Appendix](#appendix-hardware-and-flashing)).
 
 ### Option B — run it on a normal Kali machine

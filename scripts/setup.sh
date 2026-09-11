@@ -26,6 +26,14 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y --no-install-recommends chromium python3 git || true
 
+if [ -n "${WIFI_SSID:-}" ] && [ -n "${WIFI_PASS:-}" ]; then
+    echo "[*] Provisioning WiFi '$WIFI_SSID'…"
+    nmcli device wifi connect "$WIFI_SSID" password "$WIFI_PASS" >/dev/null 2>&1 \
+        || nmcli connection add type wifi con-name "$WIFI_SSID" ssid "$WIFI_SSID" \
+               wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$WIFI_PASS" \
+               connection.autoconnect yes 802-11-wireless.cloned-mac-address permanent
+fi
+
 echo "[*] Installing app as a git clone (OTA-ready)…"
 rm -rf "$APP"
 git clone --quiet "$REPO" "$APP"
