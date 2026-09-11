@@ -6,8 +6,9 @@ tool under the hood and streams its output live.
 
 Think of it as a launcher skin over your existing Kali tools: `nmap`, `masscan`,
 `airodump-ng`, `hydra`, `sqlmap`, `nikto`, `enum4linux` … grouped into sections you
-tap, with simple param fields and a live console. It updates itself with OTA pulls
-from this repo.
+tap, with simple param fields and a live console. Settings adds a one-tap
+**System Upgrade**, a **Bluetooth tools** section, and self-updating via OTA —
+both with live progress bars.
 
 ```
 ┌───────────────────────────────────────┐
@@ -33,7 +34,9 @@ curl -sSL https://raw.githubusercontent.com/darkLabz001/kali-touch-ui/main/scrip
 
 That installs every dependency, the backend service, auto-login, the fullscreen
 kiosk, and a git clone at `/opt/kali-touch-ui` so **OTA updates** in *Settings →
-OTA Update* just work. It reboots you into the UI.
+OTA Update* just work. It also hardens the 4″ panel timings so the display
+**survives reboots** (see [Panel timing](#panel-timing-480x800-at-60-hz)) and
+reboots you straight into the UI.
 
 To also join a WiFi/hotspot on first boot (e.g. your phone's hotspot), pass it
 at install time — it's **not** baked into this repo:
@@ -60,8 +63,16 @@ Chromium for you if it's missing). Use it from any browser on the network via
 
 ### Check for updates (both options)
 
-Open **Settings → ⚡ OTA Update → ⬇ Update**. The device pulls `main` from this
-repo, syntax-checks, rolls back on failure, and reloads the UI.
+Open **Settings → ⚡ OTA Update**. **⟳ Check** compares local vs `main` on GitHub;
+**⬇ Update** is only enabled when a new version exists. Updating is fully
+asynchronous — a live progress bar shows the git fetch percent and a stage
+label (fetching → verifying), it syntax-checks, rolls back on failure, and
+reloads the UI on success.
+
+> **Two-tap confirm:** kiosk-mode Chromium suppresses native `confirm()` dialogs,
+> so all destructive actions (OTA Update, System Upgrade, Reboot, Shutdown) use an
+> in-app two-tap confirm: tap once → button becomes a pulsing *"Tap again to
+> confirm"* → tap again to run.
 
 ## Architecture
 
@@ -76,7 +87,9 @@ repo, syntax-checks, rolls back on failure, and reloads the UI.
   Chromium kiosk mode, or a "save to home screen" webapp.
   - Home → sections → tools → live console. Custom tools: **WiFi Recon (PineAP)**,
     **Handshake Hunter**, **WiFi Radar**, and **Click-Run** one-liners.
-  - **Settings** holds WiFi connect, device info, **OTA Update**, Reboot/Shutdown.
+  - **Settings** holds WiFi connect, device info, **⚡ OTA Update** (with live
+    progress), **⬆ System Upgrade** (runs `apt upgrade` with a real percent/progress
+    bar), a **Bluetooth tools** section, and Reboot/Shutdown.
 - **Tool registry**: edit the `TOOLS` list at the top of `backend/server.py` to add
   tools/sections. Each entry is `(section, label, command_template, needs_root)`.
 - **OTA**: a git clone of this repo. `scripts/setup.sh` clones it for you, so
@@ -93,17 +106,20 @@ kali-touch-ui/
 │       ├── style.css        # dark touch UI
 │       └── app.js           # SPA: home → section → tool → live console
 ├── scripts/
-│   ├── setup.sh             # ⭐ ONE-COMMAND: deps + service + kiosk + OTA
+│   ├── setup.sh             # ⭐ ONE-COMMAND: deps + service + kiosk + panel + OTA
+│   ├── kali-touch-session   # X session: splash → wait for backend → kiosk;
+│   │                        #   self-heals a corrupt/missing kiosk.sh on every launch
 │   ├── kali-touchui.service # backend systemd service (starts on boot)
-│   ├── kali-touch-kiosk.desktop # X session autostart entry
-│   └── kiosk.sh             # waits for backend, opens Chromium fullscreen
+│   ├── kali-touch-kiosk.desktop # X session autostart entry → kali-touch-session
+│   └── kiosk.sh             # force-wakes HDMI sink, waits for backend, opens Chromium fullscreen
 ├── run.sh                   # run in place (python3 + optional kiosk browser)
 └── README.md
 ```
 
 ## Use it
 
-1. Power on the Pi — the UI comes up fullscreen on the touchscreen automatically.
+1. Power on the Pi — the UI comes up fullscreen on the touchscreen automatically, and
+   it survives power loss/reboots untouched.
 2. **Home** → tap a section → tap a tool.
 3. Fill the fields that appear (URL / IP / BSSID / creds) — or leave them to use the
    stored defaults (e.g. reaver's BSSID).
@@ -146,6 +162,35 @@ vi /mnt/root/etc/NetworkManager/system-connections/...
 First boot, then the **Quickstart** above: `ssh kali@<pi-ip>` (default password
 `kali`) and run the `curl | sudo bash` line.
 
+### Panel timing (480x800 at 60 Hz)
+
+The 4″ Waveshare HDMI panels only sync *reliably* at exactly 60 Hz. With the stock
+2026-era Kali images the firmware is told `disable_fw_kms_setup=1`, so X ignores
+the forced `config.txt` timings and drives the panel from its EDID — which reports
+an incompatible ~62 Hz and comes up as a **black screen on random boots**.
+`scripts/setup.sh` applies these on the Pi for you:
+
+```ini
+# /boot/firmware/config.txt  (in the [all] panel block)
+disable_fw_kms_setup=0
+hdmi_group=2
+hdmi_mode=87
+hdmi_cvt=480 800 60 6 0 0 0
+hdmi_drive=1
+hdmi_force_hotplug=1
+hdmi_ignore_edid=0xa00002
+dtoverlay=ads7846_waveshare,penirq=25,xmin=150,xmax=3900,ymin=100,ymax=3950,speed=50000
+```
+
+```text
+# /boot/firmware/cmdline.txt — append:
+video=HDMI-A-1:480x800@60
+```
+
+Verify after boot: `xrandr` should mark **59.96\*** (60 Hz) as the active mode. If
+your panel is a different resolution, replace `480x800` in `hdmi_cvt` and the
+`video=` line.
+
 ### Optional: 4″ panel rotation
 
 The UI is resolution-agnostic and portrait-rotates fine, but if your panel boots
@@ -173,4 +218,6 @@ XPT2046 / goodix panels with zero config.
 | Touch offset / upside down | `display_rotate` only affects video; calibrate touch separately. |
 | `sudo` denies tool | Re-add `echo "kali ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/kali-touchui && chmod 440 /etc/sudoers.d/kali-touchui`. |
 | Update failed, rolled back | The backend syntax-checks after each pull and reverts automatically — check `/tmp/ota.log`, fix on GitHub, update again. |
+| Nothing happens when tapping Update/Upgrade | Kiosk Chromium blocks `confirm()` — use two-tap confirm: tap again when the button shows *"Tap again to confirm"*. |
+| Black screen after reboot (kiosk runs) | A Waveshare-typical 62 Hz EDID mode is active; the panel only syncs at 60 Hz. Re-apply the [Panel timing](#panel-timing-480x800-at-60-hz) block + `video=HDMI-A-1:480x800@60`, reboot, confirm `xrandr` shows `59.96*`. |
 | Injection rejected | Fields accept only `[A-Za-z0-9._:/:[]-]` on purpose. Don't fight it — add a named param instead. |
