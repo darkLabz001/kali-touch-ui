@@ -385,6 +385,11 @@ function otaRun(meta, logBox, updBtn, chkBtn, bar, fill) {
           if (logBox.style.display === "none") showOtaLog(logBox, s.log);
           logBox.appendChild(el("div", "ota-line" + (r.ok ? " ok" : " err"), (r.ok ? "✓ " : "✗ ") + (r.msg || "done")));
           meta.textContent = "v" + (s.version || "?") + " · local " + s.local_short + " · latest " + (s.remote_short || "—") + (s.up_to_date ? " · up to date" : " · update available");
+          if (r.ok && s.store_changed !== false) {
+            meta.textContent += " · reloading UI…";
+            setTimeout(() => location.reload(), 1200);
+            return;
+          }
           setTimeout(() => refreshOta(meta, logBox, updBtn, chkBtn, bar, fill), 1500);
         }
       }).catch(() => {});

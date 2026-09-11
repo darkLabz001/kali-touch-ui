@@ -1692,6 +1692,7 @@ OTA_DIR = "/opt/kali-touch-ui"
 OTA_LOG = "/tmp/ota.log"
 APP_VERSION = "1.3.0"
 _ota_busy = False
+_ota_store_changed = False
 _ota_lock = threading.Lock()
 
 
@@ -1729,6 +1730,7 @@ def ota_remote_sha():
 
 
 def ota_status():
+    global _ota_store_changed
     local = ota_local_sha()
     remote = ota_remote_sha()
     log = ""
@@ -1737,19 +1739,19 @@ def ota_status():
             log = f.read()
     pct, stage = _ota_progress()
     return {
-        "ok": True,
         "version": APP_VERSION,
         "method": "git" if local else "none",
+        "installed": bool(local),
         "local": local,
-        "local_short": local[:7] if local else "",
+        "local_short": local[:7],
         "remote": remote,
         "remote_short": remote[:7] if remote else "",
-        "up_to_date": bool(local and local == remote),
-        "installed": bool(local),
+        "up_to_date": bool(remote) and remote == local,
+        "store_changed": _ota_store_changed,
         "busy": _ota_busy,
         "pct": pct,
-        "stage": stage,
-        "log": log[-4000:],
+        "stage": stage or None,
+        "log": log,
     }
 
 
@@ -1826,9 +1828,12 @@ def _ota_run():
     finally:
         _ota_busy = False
         if restart:
+            # Relaunch the kiosk FIRST: the backend restart below reaps this
+            # service's whole cgroup, so a pkill after it would never run and
+            # Chromium would keep serving the pre-update page from memory.
             subprocess.Popen(
-                "sleep 1; sudo -n systemctl restart kali-touchui; sleep 5; "
-                "pkill -f 'chromium.*--app=http://127.0.0.1:8080' 2>/dev/null",
+                "pkill -f 'chromium.*--app=http://127.0.0.1:8080' 2>/dev/null; "
+                "sleep 2; sudo -n systemctl restart kali-touchui",
                 shell=True,
             )
 
