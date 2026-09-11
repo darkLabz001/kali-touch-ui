@@ -1178,3 +1178,43 @@ body::after {
 .mini-btn, .chip { transition: transform 0.06s ease, box-shadow 0.15s ease, border-color 0.15s ease; }
 .mini-btn:active, .chip:active { transform: scale(0.95); }
 .mini-btn:hover, .chip.on { box-shadow: 0 0 10px rgba(16, 185, 129, 0.4); }
+
+/* ================= Wardrive ================= */
+.re-stat-val.ok { color: #39ff14; text-shadow: 0 0 10px rgba(57, 255, 20, 0.6); }
+.re-stat-val.warn { color: #ffc93d; text-shadow: 0 0 10px rgba(255, 201, 61, 0.5); }
+.re-stat-val.idle { color: #60a5a5; }
+
+.wardrive-ctr { margin: 8px 0; background: #061014; border: 1px solid #0e3a33; border-radius: 14px; padding: 10px; }
+.wdr-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.wdr-lbl { font-size: 10px; letter-spacing: 1px; color: #34d399; text-transform: uppercase; }
+.wdr-sel {
+  flex: 1; background: #05100e; color: #d1fae5; border: 1px solid #0e3a33;
+  border-radius: 8px; padding: 7px 8px; font-size: 14px; font-family: 'Fira Code', monospace;
+}
+.wdr-ble { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #9febb9; }
+.wdr-ble input { accent-color: #34d399; width: 16px; height: 16px; }
+
+.wardrive-qr { border: 1px solid #0e3a33; border-radius: 12px; background: #05100e; padding: 12px; text-align: center; }
+.wardrive-qr img { width: 168px; height: 168px; image-rendering: pixelated; border-radius: 8px; border: 1px solid #17462f; }
+.wdr-qr-tip { font-size: 11px; color: #9febb9; margin-bottom: 8px; font-family: monospace; }
+.wdr-qr-url { margin-top: 8px; font-family: 'Fira Code', monospace; font-size: 13px; color: #7dd3fc; word-break: break-all; }
+
+.re-console {
+  max-height: 220px; overflow-y: auto; border: 1px solid #0e3a33; border-radius: 12px;
+  background: #04100c; padding: 8px; font-family: 'Fira Code', 'DejaVu Sans Mono', monospace; font-size: 12px;
+}
+.lg-ln { color: #b7ffe0; padding: 2px 4px; white-space: pre-wrap; word-break: break-all; }
+.lg-ln.err { color: #ffb3b3; }
+.lg-ln.idle { color: #4d6b63; }
+
+.big-btn:disabled { opacity: 0.45; transform: none; box-shadow: none; }
+
+.run-extra { display: flex; align-items: center; margin: 6px 0 8px; }
+.tor-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #9febb9; }
+.tor-toggle input { accent-color: #b46bff; width: 16px; height: 16px; }
+
+.wdr-inp {
+  flex: 1; background: #05100e; color: #d1fae5; border: 1px solid #0e3a33;
+  border-radius: 8px; padding: 7px 8px; font-size: 14px; font-family: 'Fira Code', monospace;
+}
+.wdr-inp.wdr-sm { flex: 0 0 52px; }

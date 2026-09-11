@@ -137,13 +137,15 @@ function showCustomTools() {
   c.innerHTML = "";
   const head = el("div", "section-head");
   head.appendChild(el("h2", null, "◈ Custom Tools"));
-  head.appendChild(el("div", "hint", "3 apps · self-built"));
+  head.appendChild(el("div", "hint", "5 apps · self-built"));
   c.appendChild(head);
   const list = el("div", "tool-list");
   const apps = [
     ["◉", "Recon — PineAP", "live AP scan · signal graph · deauth", "#39ff14", showRecon],
     ["✕", "Handshake Hunter", "capture handshakes · crack with hashcat", "#00d9ff", showHunter],
     ["◎", "WiFi Radar", "live radar sweep of scanned APs", "#ffc93d", showRadar],
+    ["◈", "Wardrive", "phone-GPS drive · QR page · WiGLE CSV", "#ff7ab8", showWardrive],
+    ["⚑", "Rogue AP", "evil twin · captive portal · cred capture", "#ffb300", showRogue],
   ];
   apps.forEach(([ico, title, sub, col, fn]) => {
     const b = el("div", "tool-btn");
@@ -622,6 +624,18 @@ function showRun(tool) {
   row.appendChild(stopBtn);
   page.appendChild(row);
 
+  if (tool.params.includes("target")) {
+    const extra = el("div", "run-extra");
+    const torLbl = el("label", "tor-toggle");
+    const torChk = el("input");
+    torChk.type = "checkbox";
+    torChk.id = "run-tor";
+    const torTxt = el("span", null, " route via Tor (proxychains)");
+    torLbl.append(torChk, torTxt);
+    extra.appendChild(torLbl);
+    page.appendChild(extra);
+  }
+
   const console = el("pre", "console");
   page.appendChild(console);
   c.appendChild(page);
@@ -638,6 +652,8 @@ function startRun(tool, runBtn, stopBtn) {
   });
   params.section = tool.section;
   params.label = tool.label;
+  const torChk = document.getElementById("run-tor");
+  params.tor = !!(torChk && torChk.checked);
   console.textContent = "";
   state.running = true;
   api("/api/run", "POST", params);
@@ -958,6 +974,8 @@ document.querySelector(".btn-back").onclick = () => {
   leaveRecon();
   leaveHunter();
   leaveRadar();
+  leaveWardrive();
+  leaveRogue();
   if (state.terminal || state.settings) showHome();
   else if (state.tool) showSection(state.section, sectionTitle(state.section));
   else showHome();
@@ -1851,6 +1869,387 @@ function showHunter() {
   tick();
 }
 
+/* ================= Wardrive ================= */
+
+let wardrivePageOpen = false;
+let wardriveTimer = null;
+
+function showWardrive() {
+  state.terminal = false; state.settings = false; state.tool = null; state.section = null;
+  state.running = false;
+  document.querySelector(".btn-back").style.display = "flex";
+  wardrivePageOpen = true;
+  const c = document.querySelector(".content");
+  c.innerHTML = "";
+  const page = el("div", "recon");
+  const head = el("div", "section-head");
+  head.appendChild(el("h2", null, "◈ WARD-RIVE"));
+  const pine = el("div", "re-pine", "phone-GPS · QR page · WiGLE csv");
+  head.appendChild(pine);
+  const hint = el("div", "hint", "");
+  hint.id = "wardrive-hint";
+  head.appendChild(hint);
+  page.appendChild(head);
+
+  const stats = el("div", "re-stats");
+  stats.id = "wardrive-stats";
+  page.appendChild(stats);
+
+  // setup / control bar
+  const ctr = el("div", "wardrive-ctr");
+  const ifaceRow = el("div", "wdr-row");
+  ifaceRow.appendChild(el("span", "wdr-lbl", "card"));
+  const sel = el("select", "wdr-sel");
+  sel.id = "wardrive-iface";
+  const opt = el("option", null, "auto");
+  opt.value = "";
+  sel.appendChild(opt);
+  ifaceRow.appendChild(sel);
+  const bleLbl = el("label", "wdr-ble");
+  const bleChk = el("input");
+  bleChk.type = "checkbox";
+  bleChk.id = "wardrive-ble";
+  bleLbl.appendChild(bleChk);
+  bleLbl.appendChild(el("span", null, " BLE"));
+  ifaceRow.appendChild(bleLbl);
+  ctr.appendChild(ifaceRow);
+
+  const bar = el("div", "re-bar");
+  const start = el("button", "big-btn run", "▶ START DRIVE");
+  start.id = "wardrive-start";
+  start.onclick = () => wardriveStart();
+  const stop = el("button", "big-btn stop", "■ STOP");
+  stop.id = "wardrive-stop";
+  stop.onclick = async () => { try { await fetch("/api/wardrive/stop", { method: "POST" }); } catch (e) {} };
+  bar.append(start, stop);
+  ctr.appendChild(bar);
+  page.appendChild(ctr);
+
+  // phone / QR area
+  const qrHead = el("div", "re-tabs");
+  qrHead.appendChild(el("span", "ra-sub", "PHONE LINK — scan the QR, accept the cert, tap START ON THE PHONE"));
+  page.appendChild(qrHead);
+  const qrBox = el("div", "wardrive-qr");
+  qrBox.id = "wardrive-qr";
+  page.appendChild(qrBox);
+
+  const logHead = el("div", "re-tabs");
+  logHead.appendChild(el("span", "ra-sub", "DRIVE LOG"));
+  page.appendChild(logHead);
+  const log = el("div", "re-console");
+  log.id = "wardrive-log";
+  page.appendChild(log);
+
+  c.appendChild(page);
+
+  const tick = async () => {
+    if (!wardrivePageOpen) return;
+    try {
+      const st = await fetch("/api/wardrive/status").then(r => r.json());
+      wardriveRender(st);
+    } catch (e) {}
+  };
+  wardriveTimer = setInterval(tick, 2500);
+  tick();
+}
+
+function wardriveRender(st) {
+  const sel = document.getElementById("wardrive-iface");
+  if (sel && st.ifaces && st.ifaces.length) {
+    const cur = sel.value;
+    sel.innerHTML = "";
+    const opts = [["", "auto"], ...st.ifaces.map(i => [i, i])];
+    opts.forEach(([v, lab]) => {
+      const o = el("option", null, lab);
+      o.value = v;
+      sel.appendChild(o);
+    });
+    if (st.ifaces.includes(cur)) sel.value = cur;
+    else sel.value = st.iface && st.ifaces.includes(st.iface) ? st.iface : "";
+  }
+  const stBox = document.getElementById("wardrive-stats");
+  const last = st.last || {};
+  const gpsCls = last.gps === "fresh" ? "ok" : (last.gps === "none" ? "idle" : "warn");
+  const phCls = last.phone === "up" ? "ok" : (last.phone === "manual" ? "ok" : "idle");
+  const rows = [
+    ["RUN", st.running ? "▶ live" : "idle", st.running ? "ok" : "idle"],
+    ["iface", st.iface || "—", ""],
+    ["GPS", last.gps || "none", gpsCls],
+    ["phone", last.phone || "down", phCls],
+    ["APs", (last.total != null ? last.total : "—"), ""],
+    ["locatd", (last.located != null ? last.located : "—"), ""],
+  ];
+  if (st.running && last.cycle != null) rows.push(["cycle", last.cycle, ""]);
+  if (stBox) {
+    stBox.innerHTML = "";
+    rows.forEach(([k, v, cls]) => {
+      const cell = el("div", "re-stat");
+      const lab = el("span", "re-stat-lab", k);
+      const val = el("span", "re-stat-val" + (cls ? " " + cls : ""), v);
+      cell.append(lab, val);
+      stBox.appendChild(cell);
+    });
+  }
+  const sbtn = document.getElementById("wardrive-start");
+  if (sbtn) sbtn.disabled = st.running;
+  const qr = document.getElementById("wardrive-qr");
+  if (qr) {
+    qr.innerHTML = "";
+    if (st.running) {
+      if (st.qr) {
+        const imgBox = el("div", "wdr-qr-img");
+        const img = el("img");
+        img.src = st.qr;
+        img.alt = "QR";
+        imgBox.appendChild(img);
+        qr.appendChild(imgBox);
+      }
+      const urlBox = el("div", "wdr-qr-url", st.url || "…");
+      qr.appendChild(urlBox);
+      const tip = el("div", "wdr-qr-tip", "phone must be on the same network — open this with your phone's camera:");
+      qr.prepend(tip);
+    } else {
+      const idle = el("div", "wdr-qr-tip", "start a drive and the phone link QR appears here.");
+      qr.appendChild(idle);
+    }
+  }
+  const log = document.getElementById("wardrive-log");
+  if (log) {
+    if (st.tail.length > 0) {
+      log.innerHTML = "";
+      st.tail.forEach(evt => {
+        if (typeof evt === "string") {
+          log.appendChild(el("div", "lg-ln", evt));
+        } else if (evt.event === "scan") {
+          log.appendChild(el("div", "lg-ln",
+            "#" + evt.cycle + "  " + evt.wifi + " APs  GPS:" + (evt.gps || "none") +
+            "  ph:" + (evt.phone || "?") + "  located:" + (evt.located || 0)));
+        } else if (evt.event === "done") {
+          log.appendChild(el("div", "lg-ln", "■ done — " + evt.total + " APs → " + evt.out));
+        } else if (evt.event === "error") {
+          log.appendChild(el("div", "lg-ln err", "✕ " + (evt.msg || "error")));
+        } else if (evt.event === "boot") {
+          log.appendChild(el("div", "lg-ln", "▶ drive on " + evt.iface + " → " + evt.out +
+            (evt.manual ? " [manual pin]" : "")));
+        } else {
+          log.appendChild(el("div", "lg-ln", JSON.stringify(evt)));
+        }
+      });
+      log.scrollTop = log.scrollHeight;
+    } else {
+      log.appendChild(el("div", "lg-ln idle", "no drive yet."));
+    }
+  }
+}
+
+async function wardriveStart() {
+  const iface = document.getElementById("wardrive-iface").value;
+  const ble = document.getElementById("wardrive-ble").checked;
+  const sbtn = document.getElementById("wardrive-start");
+  if (sbtn) { sbtn.disabled = true; sbtn.textContent = "starting…"; }
+  try {
+    const r = await fetch("/api/wardrive/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ iface, ble }),
+    }).then(r => r.json());
+    if (sbtn) {
+      sbtn.textContent = r.ok ? "▶ START DRIVE" : "start failed: " + (r.msg || "?");
+      setTimeout(() => { if (sbtn) sbtn.textContent = "▶ START DRIVE"; }, 3000);
+    }
+  } catch (e) {
+    if (sbtn) { sbtn.textContent = "▶ START DRIVE"; sbtn.disabled = false; }
+  }
+}
+
+/* ================= Rogue AP ================= */
+
+let roguePageOpen = false;
+let rogueTimer = null;
+
+function showRogue() {
+  state.terminal = false; state.settings = false; state.tool = null; state.section = null;
+  state.running = false;
+  document.querySelector(".btn-back").style.display = "flex";
+  roguePageOpen = true;
+  const c = document.querySelector(".content");
+  c.innerHTML = "";
+  const page = el("div", "recon");
+  const head = el("div", "section-head");
+  head.appendChild(el("h2", null, "⚑ ROGUE AP"));
+  const pine = el("div", "re-pine", "evil twin · captive portal · cred capture");
+  head.appendChild(pine);
+  const hint = el("div", "hint", "");
+  hint.id = "rogue-hint";
+  head.appendChild(hint);
+  page.appendChild(head);
+
+  const stats = el("div", "re-stats");
+  stats.id = "rogue-stats";
+  page.appendChild(stats);
+
+  const ctr = el("div", "wardrive-ctr");
+
+  const row1 = el("div", "wdr-row");
+  row1.appendChild(el("span", "wdr-lbl", "card"));
+  const sel = el("select", "wdr-sel");
+  sel.id = "rogue-iface";
+  row1.appendChild(sel);
+  ctr.appendChild(row1);
+
+  const row2 = el("div", "wdr-row");
+  row2.appendChild(el("span", "wdr-lbl", "ssid"));
+  const ssid = el("input", "wdr-inp");
+  ssid.id = "rogue-ssid";
+  ssid.value = "Free-WiFi";
+  ssid.maxLength = 26;
+  row2.appendChild(ssid);
+  ctr.appendChild(row2);
+
+  const row3 = el("div", "wdr-row");
+  row3.appendChild(el("span", "wdr-lbl", "ch"));
+  const ch = el("input", "wdr-inp wdr-sm");
+  ch.id = "rogue-ch";
+  ch.value = "6";
+  ch.inputMode = "numeric";
+  row3.appendChild(ch);
+  const psLbl = el("span", "wdr-lbl", "wpa2-psk");
+  const ps = el("input", "wdr-inp");
+  ps.id = "rogue-psk";
+  ps.placeholder = "leave empty for open";
+  row3.appendChild(psLbl);
+  row3.appendChild(ps);
+  ctr.appendChild(row3);
+
+  const bar = el("div", "re-bar");
+  const start = el("button", "big-btn run", "▶ SPIN UP AP");
+  start.id = "rogue-start";
+  start.onclick = () => rogueStart();
+  const stop = el("button", "big-btn stop", "■ TEAR DOWN");
+  stop.id = "rogue-stop";
+  stop.onclick = async () => { try { await fetch("/api/rogue/stop", { method: "POST" }); } catch (e) {} };
+  bar.append(start, stop);
+  ctr.appendChild(bar);
+  page.appendChild(ctr);
+
+  const clHead = el("div", "re-tabs");
+  clHead.appendChild(el("span", "ra-sub", "CLIENTS"));
+  page.appendChild(clHead);
+  const clients = el("div", "re-table");
+  clients.id = "rogue-clients";
+  page.appendChild(clients);
+
+  const crHead = el("div", "re-tabs");
+  crHead.appendChild(el("span", "ra-sub", "CAPTURED CREDS — dnsmasq points every name here"));
+  page.appendChild(crHead);
+  const creds = el("div", "re-table");
+  creds.id = "rogue-creds";
+  page.appendChild(creds);
+
+  c.appendChild(page);
+
+  const tick = async () => {
+    if (!roguePageOpen) return;
+    try {
+      const st = await fetch("/api/rogue/status").then(r => r.json());
+      rogueRender(st);
+    } catch (e) {}
+  };
+  rogueTimer = setInterval(tick, 2500);
+  tick();
+}
+
+function rogueRender(st) {
+  const sel = document.getElementById("rogue-iface");
+  if (sel && st.ifaces) {
+    const cur = sel.value;
+    sel.innerHTML = "";
+    const opts = [["", "auto"], ...(st.ifaces || []).map(i => [i, i])];
+    opts.forEach(([v, lab]) => {
+      const o = el("option", null, lab);
+      o.value = v;
+      sel.appendChild(o);
+    });
+    sel.value = cur || "";
+  }
+  const stBox = document.getElementById("rogue-stats");
+  if (stBox) {
+    stBox.innerHTML = "";
+    const rows = [
+      ["AP", st.running ? "▶ live" : "down", st.running ? "ok" : "idle"],
+      ["ssid", st.ssid || "—", ""],
+      ["ch", st.channel != null ? st.channel : "—", ""],
+      ["hostapd", st.hostapd ? "ok" : "missing", st.hostapd ? "ok" : "warn"],
+      ["clients", st.clients ? st.clients.length : 0, ""],
+      ["creds", st.creds ? st.creds.length : 0, ""],
+    ];
+    rows.forEach(([k, v, cls]) => {
+      const cell = el("div", "re-stat");
+      cell.append(el("span", "re-stat-lab", k),
+                  el("span", "re-stat-val" + (cls ? " " + cls : ""), v));
+      stBox.appendChild(cell);
+    });
+  }
+  const hint = document.getElementById("rogue-hint");
+  if (hint) hint.textContent = st.running ? "victims connect to '" + st.ssid + "' on " + st.iface : "";
+  const sbtn = document.getElementById("rogue-start");
+  if (sbtn) sbtn.disabled = st.running;
+  const clients = document.getElementById("rogue-clients");
+  if (clients) {
+    clients.innerHTML = "";
+    const rows = st.clients || [];
+    if (!rows.length) clients.appendChild(el("div", "re-empty", "waiting for DHCP clients…"));
+    rows.forEach(cx => {
+      const r = el("div", "ra-row");
+      const m = el("div", "ra-main");
+      m.appendChild(el("span", "ra-sig", "•"));
+      m.appendChild(el("div", null, cx.ip + "  " + cx.mac.toUpperCase()));
+      if (cx.host && cx.host !== "*") m.appendChild(el("div", "sub", cx.host));
+      r.appendChild(m);
+      clients.appendChild(r);
+    });
+  }
+  const creds = document.getElementById("rogue-creds");
+  if (creds) {
+    creds.innerHTML = "";
+    const rows = st.creds || [];
+    if (!rows.length) creds.appendChild(el("div", "re-empty", "no credentials captured yet."));
+    rows.forEach(rc => {
+      const r = el("div", "ra-row");
+      const m = el("div", "ra-main");
+      m.appendChild(el("span", "ra-sig", "◎"));
+      const mid = el("div", "tb-mid");
+      mid.appendChild(el("div", null, rc.user + " / " + rc.pw));
+      mid.appendChild(el("div", "sub", rc.time + "  from " + rc.ip + "  (" + rc.ssid + ")"));
+      m.appendChild(mid);
+      r.appendChild(m);
+      creds.appendChild(r);
+    });
+  }
+}
+
+async function rogueStart() {
+  const iface = document.getElementById("rogue-iface").value;
+  const ssid = document.getElementById("rogue-ssid").value || "Free-WiFi";
+  const ch = document.getElementById("rogue-ch").value || "6";
+  const psk = document.getElementById("rogue-psk").value || "";
+  const sbtn = document.getElementById("rogue-start");
+  if (sbtn) { sbtn.disabled = true; sbtn.textContent = "spinning up…"; }
+  try {
+    const r = await fetch("/api/rogue/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ iface, ssid, channel: ch, psk: psk || null }),
+    }).then(r => r.json());
+    if (sbtn) {
+      sbtn.textContent = r.ok ? "▶ SPIN UP AP" : "failed: " + (r.msg || "?");
+      setTimeout(() => { if (sbtn) sbtn.textContent = "▶ SPIN UP AP"; }, 3500);
+    }
+  } catch (e) {
+    if (sbtn) { sbtn.textContent = "▶ SPIN UP AP"; sbtn.disabled = false; }
+  }
+}
+
 /* ================= WiFi Radar ================= */
 
 let radarPageOpen = false;
@@ -2164,6 +2563,16 @@ function leaveRadar() {
   radarPageOpen = false;
   if (radarTimer) { clearInterval(radarTimer); radarTimer = null; }
   if (radarRAF) { cancelAnimationFrame(radarRAF); radarRAF = 0; }
+}
+
+function leaveWardrive() {
+  wardrivePageOpen = false;
+  if (wardriveTimer) { clearInterval(wardriveTimer); wardriveTimer = null; }
+}
+
+function leaveRogue() {
+  roguePageOpen = false;
+  if (rogueTimer) { clearInterval(rogueTimer); rogueTimer = null; }
 }
 
 /* ================= boot splash ================= */

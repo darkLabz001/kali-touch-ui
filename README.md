@@ -10,6 +10,12 @@ tap, with simple param fields and a live console. Settings adds a one-tap
 **System Upgrade**, a **Bluetooth tools** section, and self-updating via OTA —
 both with live progress bars.
 
+Custom-built tools round it out: **Wardrive** (phone-GPS wardriving via a QR
+page → WiGLE CSV), **Recon/PineAP**, **Handshake Hunter** (auto-cracks the handshake
+as soon as it's captured), **WiFi Radar**, **Rogue AP** (evil-twin AP with a captive
+portal that captures login credentials), plus a tap-to-toggle **route via Tor**
+(proxychains) on any network tool.
+
 ```
 ┌───────────────────────────────────────┐
 │ ◉ KALI TOUCH            ● LIVE       │
@@ -100,6 +106,12 @@ reloads the UI on success.
 ```
 kali-touch-ui/
 ├── backend/server.py        # HTTP + SSE backend (stdlib only)
+├── wardrive/                # wardriving core: scanner/GPS/autosave + headless driver
+│   ├── wardriver.py         # (vendored) WiFi/BLE scan + GPS placement + WiGLE CSV
+│   ├── gps_page.py          # (vendored) phone QR page that streams GPS fixes
+│   ├── gps_server.py        # standalone HTTPS phone-GPS feed (TUI-compatible)
+│   └── headless.py          # drive runner: scan loop + QR page + JSON status
+├── rogue/portal.py          # captive-portal HTTP site for the rogue AP (:80)
 ├── web/
 │   ├── index.html
 │   └── assets/
@@ -125,6 +137,31 @@ kali-touch-ui/
    stored defaults (e.g. reaver's BSSID).
 4. **▶ RUN** starts the tool, **■ STOP** kills it, and output streams live below.
 5. Back arrow returns to the section/home; hitting back also stops a running stream.
+
+### Built-in custom tools
+
+The Home screen surfaces three hand-built tools for the field kit:
+
+- **◈ Wardrive** — one tap starts a Wi-Fi/BLE scan that autosaves a WiGLE CSV
+  (`~/.wardriver/scans/wardriving_YYYYMMDD_HHMMSS.csv` with lat/lon/accuracy).
+  A QR code on screen points your *phone* at the Pi's HTTPS page (`:8888`, cert is
+  self-signed — accept it), which streams GPS fixes back over
+  `POST /gps/batch`; the scan is only geotagged while the phone reports a fresh fix.
+  Tap **Stop** when done — the file is flushed on a clean stop.
+- **⚑ Rogue AP** — an evil-twin AP (`toolwlan0` → `Free-WiFi`, ch 6) with
+  `dnsmasq` resolving everything to `10.66.66.1` and a captive portal on `:80`.
+  Victims tapping "Connect" dump their credentials to `/tmp/rogue/creds.csv`,
+  visible live in the UI. Stopping restores the NIC to managed mode for NetworkManager.
+- **Handshake Hunter** — per-target capture of an AP + client pair
+  (`airodump-ng` on the attack NIC + `aireplay-ng` deauth). The moment a 4-way
+  handshake is detected, the backend auto-converts it (`hcxpcapngtool`) and runs
+  `aircrack-ng` against `rockyou.txt`; a found key lands in
+  `/tmp/hs/pots/*.aircrack` and the UI flips to **KEY FOUND**.
+
+Choose any runnable tool ([**Custom tools** fields](#adding-your-own-tools) apply)
+and **Tor** will wrap it in `proxychains` (and start `tor` via systemd) so traffic
+exits through the Tor network — ideal when the hotspot you're on shouldn't see
+your scan traffic.
 
 ### Adding your own tools
 

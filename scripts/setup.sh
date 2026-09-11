@@ -83,6 +83,10 @@ if [ ! -f "$LIGHTDM_CONF" ] || ! grep -q '^autologin-user=' "$LIGHTDM_CONF"; the
     sed -i '/^\[Seat:/a autologin-user=kali\nautologin-user-timeout=0' "$LIGHTDM_CONF"
 fi
 
+echo "[*] Optional: QR-code rendering for Wardriving phone link (best-effort, 💫)."
+apt-get install -y --no-install-recommends python3-qrcode python3-pil >/dev/null 2>&1 \
+    || true
+
 echo "[*] Installing kiosk autostart…"
 install -m 0644 "$APP/scripts/kali-touch-kiosk.desktop" "$AUTOSTART_DIR/"
 echo "[*] Installing resilient kiosk fallback…"
