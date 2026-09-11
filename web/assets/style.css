@@ -377,6 +377,25 @@ body.kbd-open .console { max-height: 24vh; }
 .set-btn.danger { background: linear-gradient(160deg, #ff5a5a, #c12b2b); color: #fff; }
 .set-btn.scanned { background: linear-gradient(160deg, #3aa0ff, #2468c9); color: #fff; }
 
+.ota-meta { font-size: 13px; color: var(--muted); margin-bottom: 12px; font-family: 'Fira Code', 'JetBrains Mono', 'DejaVu Sans Mono', monospace; letter-spacing: 0.3px; }
+.ota-btns { display: flex; gap: 12px; }
+.ota-btns .set-btn { flex: 1; }
+.ota-log {
+  margin-top: 12px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  max-height: 180px;
+  overflow-y: auto;
+  font-family: 'Fira Code', 'JetBrains Mono', 'DejaVu Sans Mono', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ota-line { color: var(--muted); word-break: break-all; }
+.ota-line.ok { color: #32f04e; }
+.ota-line.err { color: #ff6b6b; }
+
 .net-list { display: flex; flex-direction: column; gap: 10px; }
 .net-list.empty { display: block; }
 .net-empty { color: var(--muted); font-size: 14px; text-align: center; padding: 16px; }

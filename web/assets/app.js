@@ -229,9 +229,28 @@ function showSettings() {
   const infoBody = el("div", "info-body");
   infoCard.appendChild(infoBody);
   page.appendChild(infoCard);
+
+  const otaCard = el("div", "set-card");
+  otaCard.appendChild(el("div", "set-title", "⚡ OTA Update"));
+  const otaMeta = el("div", "ota-meta", "checking…");
+  const otaBtns = el("div", "ota-btns");
+  const otaCheck = el("button", "set-btn", "⟳ Check");
+  const otaUpd = el("button", "set-btn warn", "⬇ Update");
+  otaUpd.disabled = true;
+  otaBtns.appendChild(otaCheck);
+  otaBtns.appendChild(otaUpd);
+  const otaLog = el("div", "ota-log");
+  otaLog.style.display = "none";
+  otaCard.appendChild(otaMeta);
+  otaCard.appendChild(otaBtns);
+  otaCard.appendChild(otaLog);
+  page.appendChild(otaCard);
   c.appendChild(page);
 
   scanBtn.onclick = () => doWifiScan(scanBtn, netList, statusRow);
+  otaCheck.onclick = () => refreshOta(otaMeta, otaLog, otaUpd, otaCheck);
+  otaUpd.onclick = () => otaRun(otaMeta, otaLog, otaUpd, otaCheck);
+  refreshOta(otaMeta, otaLog, otaUpd, otaCheck);
 
   Promise.all([api("/api/network"), api("/api/wifi/scan")]).then(([net, scan]) => {
     renderNetworkInfo(infoBody, net.info);
@@ -243,6 +262,61 @@ function showSettings() {
     }
   }).catch(() => {
     statusRow.textContent = "backend unreachable";
+  });
+}
+
+function refreshOta(meta, logBox, updBtn, chkBtn) {
+  api("/api/ota/status").then(s => {
+    if (!s.installed) {
+      meta.textContent = "OTA not enabled — reinstall from GitHub first.";
+      updBtn.disabled = true;
+      return;
+    }
+    const st = s.up_to_date ? "up to date" : "update available";
+    meta.textContent = "local " + s.local_short + " · latest " + (s.remote_short || "—") + " · " + st;
+    updBtn.disabled = s.busy || s.up_to_date;
+    chkBtn.disabled = s.busy;
+    if (s.busy) {
+      showOtaLog(logBox, s.log);
+      setTimeout(() => refreshOta(meta, logBox, updBtn, chkBtn), 2000);
+    }
+  }).catch(() => {
+    meta.textContent = "backend unreachable";
+  });
+}
+
+function showOtaLog(logBox, txt) {
+  logBox.style.display = "block";
+  logBox.innerHTML = "";
+  (txt || "").split("\n").filter(Boolean).slice(-30).forEach(l => {
+    const d = el("div", "ota-line", l);
+    if (/fail|rollback|error/i.test(l)) d.classList.add("err");
+    logBox.appendChild(d);
+  });
+}
+
+function otaRun(meta, logBox, updBtn, chkBtn) {
+  if (!confirm("Pull the latest version from GitHub and restart the device UI?")) return;
+  updBtn.disabled = true;
+  chkBtn.disabled = true;
+  api("/api/ota/update", "POST").then(r => {
+    const t = setInterval(() => {
+      api("/api/ota/status").then(s => {
+        if (logBox.style.display === "none" && (s.log || "").trim()) showOtaLog(logBox, s.log);
+        if (!s.busy) {
+          clearInterval(t);
+          if (logBox.style.display === "none") showOtaLog(logBox, s.log);
+          logBox.appendChild(el("div", "ota-line" + (r.ok ? " ok" : " err"), (r.ok ? "✓ " : "✗ ") + (r.msg || "done")));
+          updBtn.disabled = false;
+          chkBtn.disabled = false;
+          meta.textContent = "local " + s.local_short + " · latest " + (s.remote_short || "—") + (s.up_to_date ? " · up to date" : " · update available");
+        }
+      }).catch(() => {});
+    }, 2500);
+  }).catch(e => {
+    meta.textContent = "update failed: " + e;
+    updBtn.disabled = false;
+    chkBtn.disabled = false;
   });
 }
 

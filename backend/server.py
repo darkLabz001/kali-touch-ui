@@ -1113,6 +1113,120 @@ def run_feed():
 threading.Thread(target=run_feed, daemon=True).start()
 
 
+# ---------------- OTA update ----------------
+OTA_REPO = "https://github.com/darkLabz001/kali-touch-ui.git"
+OTA_BRANCH = "main"
+OTA_DIR = "/opt/kali-touch-ui"
+OTA_LOG = "/tmp/ota.log"
+_ota_busy = False
+_ota_lock = threading.Lock()
+
+
+def _ota_log(msg):
+    line = "[%s] %s" % (time.strftime("%H:%M:%S"), msg)
+    with open(OTA_LOG, "a") as f:
+        f.write(line + "\n")
+    return line
+
+
+def _ota_sh(cmd, timeout=60):
+    cx = cmd
+    if os.geteuid() != 0:
+        cx = "sudo -n " + cx
+    try:
+        p = subprocess.run(cx, shell=True, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, (p.stdout + p.stderr).strip()
+    except subprocess.TimeoutExpired:
+        return 2, "timeout"
+
+
+def ota_local_sha():
+    rc, out = _ota_sh("git -C %s rev-parse HEAD" % OTA_DIR, 15)
+    return out.strip() if rc == 0 else ""
+
+
+def ota_remote_sha():
+    rc, out = _ota_sh("git ls-remote %s refs/heads/%s" % (OTA_REPO, OTA_BRANCH), 30)
+    if rc == 0:
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1] == "refs/heads/%s" % OTA_BRANCH:
+                return parts[0]
+    return ""
+
+
+def ota_status():
+    local = ota_local_sha()
+    remote = ota_remote_sha()
+    log = ""
+    if os.path.exists(OTA_LOG):
+        with open(OTA_LOG) as f:
+            log = f.read()
+    return {
+        "ok": True,
+        "method": "git" if local else "none",
+        "local": local,
+        "local_short": local[:7] if local else "",
+        "remote": remote,
+        "remote_short": remote[:7] if remote else "",
+        "up_to_date": bool(local and local == remote),
+        "installed": bool(local),
+        "busy": _ota_busy,
+        "log": log[-4000:],
+    }
+
+
+def ota_update():
+    global _ota_busy
+    with _ota_lock:
+        if _ota_busy:
+            return {"ok": False, "msg": "an update is already running", "busy": True}
+        _ota_busy = True
+    try:
+        with open(OTA_LOG, "w") as f:
+            f.write("")
+        _ota_log("checking for updates…")
+        if not ota_local_sha():
+            _ota_log("install not set up for OTA (not a git repo)")
+            return {"ok": False, "msg": "OTA not configured on this install"}
+        rc, out = _ota_sh("git -C %s fetch origin" % OTA_DIR, 120)
+        if rc != 0:
+            _ota_log("fetch FAILED: " + out[-200:])
+            return {"ok": False, "msg": "fetch failed: " + out[-80:]}
+        old = ota_local_sha()
+        remote = ota_remote_sha()
+        if remote and remote == old:
+            _ota_log("already up to date (%s)" % old[:7])
+            return {"ok": True, "msg": "already up to date"}
+        restart = False
+        rc, out = _ota_sh("git -C %s reset --hard origin/%s" % (OTA_DIR, OTA_BRANCH), 90)
+        if rc != 0:
+            _ota_log("reset FAILED: " + out[-200:])
+            return {"ok": False, "msg": "apply failed: " + out[-80:]}
+        _ota_log("syntax check…")
+        ok = _ota_sh("node --check %s/web/assets/app.js" % OTA_DIR, 20)
+        ok2 = _ota_sh("python3 -m py_compile %s/backend/server.py" % OTA_DIR, 20)
+        if ok[0] != 0 or ok2[0] != 0:
+            _ota_log("check FAILED — rolling back to %s" % old[:7])
+            _ota_sh("git -C %s reset --hard %s" % (OTA_DIR, old), 60)
+            _ota_log("rolled back; update aborted")
+            return {"ok": False, "msg": "post-update check failed; rolled back"}
+        _ota_log("update complete (%s)" % remote[:7])
+        restart = True
+        return {"ok": True, "msg": "updated — restarting service"}
+    except Exception as e:
+        _ota_log("ERROR: %s" % e)
+        return {"ok": False, "msg": str(e)}
+    finally:
+        _ota_busy = False
+        if restart:
+            subprocess.Popen(
+                "sleep 1; sudo -n systemctl restart kali-touchui; sleep 5; "
+                "pkill -f 'chromium.*--app=http://127.0.0.1:8080' 2>/dev/null",
+                shell=True,
+            )
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -1160,6 +1274,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"info": get_network_info()}).encode())
         elif path == "/api/sysinfo":
             self._send(200, json.dumps(sysinfo()).encode())
+        elif path == "/api/ota/status":
+            self._send(200, json.dumps(ota_status()).encode())
         elif path == "/api/wifi/scan":
             self._send(200, json.dumps(scan_wifi()).encode())
         elif path == "/api/term/status":
@@ -1248,6 +1364,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(reboot_device()).encode())
         elif path == "/api/shutdown":
             self._send(200, json.dumps(shutdown_device()).encode())
+        elif path == "/api/ota/update":
+            res = ota_update()
+            self._send(200 if res.get("ok") else 409, json.dumps(res).encode())
         elif path == "/api/term/start":
             TERM.start(init_cmd=body.get("cmd") or None, cwd=body.get("cwd") or None)
             self._send(200, json.dumps({"ok": True, "running": TERM.exited is False}).encode())
