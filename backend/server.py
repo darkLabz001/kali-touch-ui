@@ -1157,7 +1157,7 @@ OTA_REPO = "https://github.com/darkLabz001/kali-touch-ui.git"
 OTA_BRANCH = "main"
 OTA_DIR = "/opt/kali-touch-ui"
 OTA_LOG = "/tmp/ota.log"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 _ota_busy = False
 _ota_lock = threading.Lock()
 
