@@ -51,6 +51,9 @@ fi
 
 echo "[*] Installing kiosk autostart…"
 install -m 0644 "$APP/scripts/kali-touch-kiosk.desktop" "$AUTOSTART_DIR/"
+echo "[*] Installing resilient kiosk fallback…"
+install -D -m 0755 "$APP/scripts/kiosk.sh" /usr/local/share/kali-touch/kiosk.sh
+install -m 0755 "$APP/scripts/kali-touch-session" /usr/local/bin/kali-touch-session
 
 echo
 echo "[*] Setup complete."

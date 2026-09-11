@@ -1,12 +1,38 @@
 #!/bin/bash
-# Kali Touch kiosk session: orient the panel, then paint the boot still on
-# the X root so the gap between splash and Chromium is never a black screen.
+# Kali Touch kiosk session: orient the panel, paint a boot still on the X
+# root briefly, then hand over to the kiosk launcher. Self-heals broken
+# installs (missing/empty kiosk.sh) with a static fallback copy so the
+# panel never sits on a black screen because of a file problem.
+set -u
+
 export DISPLAY=:0
+
+# Panel orientation (matches /boot config for the 4" 480x800 display).
 /usr/bin/xrandr --output HDMI-1 --rotate inverted
+
+# Paint the DARKSEC boot frame on the root for a moment so the gap between
+# splash and Chromium is never just black end-to-end, then let it go.
 if [ -f /opt/kali-touch-ui/web/media/boot-frame.png ]; then
-    /usr/bin/convert /opt/kali-touch-ui/web/media/boot-frame.png -resize 480x800\! /tmp/kali-touch-bg.png
-    /usr/bin/display -window root /tmp/kali-touch-bg.png 2>/dev/null
+    /usr/bin/convert /opt/kali-touch-ui/web/media/boot-frame.png -resize 480x800\! /tmp/kali-touch-bg.png 2>/dev/null
+    /usr/bin/display -window root /tmp/kali-touch-bg.png >/dev/null 2>&1 &
+    DS_PID=$!
+    sleep 1
+    kill "$DS_PID" 2>/dev/null
+fi
+
+# Kiosk launcher. Prefer the repo copy; if it's missing/broken, try to
+# restore it from the git checkout, else fall back to a static copy.
+K=/opt/kali-touch-ui/scripts/kiosk.sh
+FB=/usr/local/share/kali-touch/kiosk.sh
+
+if [ ! -s "$K" ] || [ ! -x "$K" ]; then
+    GIT_DIR="$(dirname "$(dirname "$K")")"
+    git -C "$GIT_DIR" fetch -q origin 2>/dev/null && git -C "$GIT_DIR" reset --hard -q origin/main 2>/dev/null
+    chmod +x "$K" 2>/dev/null || true
+fi
+if [ ! -s "$K" ] || [ ! -x "$K" ]; then
+    K="$FB"
 fi
 
 # Kiosk launcher (expects to replace this session process).
-exec /opt/kali-touch-ui/scripts/kiosk.sh
+exec "$K"
