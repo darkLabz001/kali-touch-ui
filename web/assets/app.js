@@ -12,9 +12,10 @@ function el(tag, cls, text) {
   return e;
 }
 
-function mkStatCell(lab, val) {
+function mkStatCell(lab, val, cls) {
   const b = el("div", "re-stat");
-  b.append(el("span", "re-stat-lab", lab), el("span", "re-stat-val", val));
+  b.append(el("span", "re-stat-lab", lab),
+    el("span", "re-stat-val" + (cls ? " " + cls : ""), val));
   return b;
 }
 
@@ -1716,13 +1717,18 @@ function renderHunterAps() {
 async function hsHunt(ap) {
   const hint = document.getElementById("hunter-hint");
   if (hint) hint.textContent = "hunting " + (ap.essid || ap.bssid) + "…";
+  const poke = document.getElementById("hunter-autodeauth");
   try {
     const r = await fetch("/api/hs/start", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bssid: ap.bssid, essid: ap.essid, channel: parseInt(ap.channel, 10) || null }),
+      body: JSON.stringify({
+        bssid: ap.bssid, essid: ap.essid,
+        channel: parseInt(ap.channel, 10) || null,
+        autodeauth: !poke || poke.checked,
+      }),
     });
     const j = await r.json();
-    if (hint) hint.textContent = j.ok ? "▶ capturing " + j.msg + " — waiting for handshake" : "✗ " + j.msg;
+    if (hint) hint.textContent = j.ok ? "▶ capturing " + j.msg + (j.ok && (!poke || poke.checked) ? " — jamming until handshake" : " — waiting for handshake") : "✗ " + j.msg;
   } catch (e) {}
 }
 
@@ -1751,13 +1757,40 @@ function hunterStats(st) {
   const stats = document.getElementById("hunter-stats");
   if (!stats) return;
   stats.innerHTML = "";
+  const hsCell = st.handshakes > 0
+    ? "✓ " + st.handshakes + " HS"
+    : (st.pmkid > 0 ? "PMKID" : st.running ? "wait" : "0");
   stats.append(
     mkStatCell("IFACE", st.iface ? "▣ " + st.iface : "○ none"),
     mkStatCell("TARGET", st.target ? st.target.slice(0, 15) : "—"),
     mkStatCell("CH", st.channel || "any"),
     mkStatCell("CAP", st.captures),
+    mkStatCell("HS", hsCell, st.handshakes > 0 ? "ok" : (st.pmkid > 0 ? "ok" : "")),
     mkStatCell("CRACK", st.cracking ? "● RUN" : "idle"),
   );
+}
+
+function hunterAlert(st) {
+  const al = document.getElementById("hunter-alert");
+  if (!al) return;
+  if (st.running && st.handshakes > 0) {
+    al.textContent = st.cracked && st.cracked !== "null"
+      ? "✓ HANDSHAKE CRACKED — " + st.cracked
+      : "✓ HANDSHAKE CAPTURED" + (st.handshakes > 1 ? " ×" + st.handshakes : "") + " — cracking…";
+    al.className = "hs-alert ok";
+  } else if (st.running && st.pmkid > 0) {
+    al.textContent = "✓ PMKID CAPTURED — cracking…";
+    al.className = "hs-alert ok";
+  } else if (st.running && st.poke) {
+    al.textContent = "◙ jamming — " + (st.pokes || 0) + " deauth round(s) sent, watching for the handshake…";
+    al.className = "hs-alert warn";
+  } else if (st.running) {
+    al.textContent = "capturing — deauth-auto off, press ⚡ to force a handshake";
+    al.className = "hs-alert";
+  } else if (al.textContent) {
+    al.textContent = "";
+    al.className = "hs-alert";
+  }
 }
 
 function renderHunterCaps(caps) {
@@ -1833,6 +1866,10 @@ function showHunter() {
   stats.id = "hunter-stats";
   page.appendChild(stats);
 
+  const alert = el("div", "hs-alert");
+  alert.id = "hunter-alert";
+  page.appendChild(alert);
+
   const bar = el("div", "re-bar");
   const scan = el("button", "big-btn run", "▶ SCAN ENV");
   scan.onclick = () => hunterEnvScan();
@@ -1840,7 +1877,15 @@ function showHunter() {
   stop.onclick = async () => {
     try { await fetch("/api/hs/stop", { method: "POST" }); } catch (e) {}
   };
-  bar.append(scan, stop);
+  const pokeLbl = el("label", null);
+  const pokeChk = el("input");
+  pokeChk.type = "checkbox";
+  pokeChk.id = "hunter-autodeauth";
+  pokeChk.checked = true;
+  pokeLbl.style.cssText = "display:flex;align-items:center;gap:6px;padding:0 10px;font:13px/1 'Fira Code',monospace;color:#9febb9;";
+  pokeLbl.appendChild(pokeChk);
+  pokeLbl.appendChild(el("span", null, " deauth-auto"));
+  bar.append(scan, stop, pokeLbl);
   page.appendChild(bar);
 
   const apsHead = el("div", "re-tabs");
@@ -1866,6 +1911,7 @@ function showHunter() {
       const st = await fetch("/api/hs/state").then(r => r.json());
       const cp = await fetch("/api/hs/captures").then(r => r.json());
       hunterStats(st);
+      hunterAlert(st);
       renderHunterCaps(cp.captures);
       const h = document.getElementById("hunter-hint");
       if (h && st.running) h.textContent = "▶ capturing " + (st.target || "").slice(0, 14) + " on ch " + (st.channel || "any") + " — deauth to force";

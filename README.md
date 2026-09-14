@@ -159,11 +159,14 @@ The Home screen surfaces custom hand-built tools for the field kit (`Custom Tool
   `dnsmasq` resolving everything to `10.66.66.1` and a captive portal on `:80`.
   Victims tapping "Connect" dump their credentials to `/tmp/rogue/creds.csv`,
   visible live in the UI. Stopping restores the NIC to managed mode for NetworkManager.
-- **Handshake Hunter** — per-target capture of an AP + client pair
-  (`airodump-ng` on the attack NIC + `aireplay-ng` deauth). The moment a 4-way
-  handshake is detected, the backend auto-converts it (`hcxpcapngtool`) and runs
-  `aircrack-ng` against `rockyou.txt`; a found key lands in
-  `/tmp/hs/pots/*.aircrack` and the UI flips to **KEY FOUND**.
+- **Handshake Hunter** — one-tap capture of an AP + client pair
+  (`airodump-ng` in auto-set monitor mode on the attack NIC). With **auto-deauth**
+  on (default), it pokes the AP every ~6s — broadcast deauth plus one per client
+  taken from the live capture — until a 4-way handshake or PMKID lands, then stops
+  jamming so the client can rejoin cleanly. The live panel shows poke count and
+  flips to **HDNSHAKE ✓** the moment a handshake is detected; the backend
+  auto-converts it (`hcxpcapngtool`) and runs `aircrack-ng` against `rockyou.txt`;
+  a found key lands in `/tmp/hs/pots/*.aircrack` and the UI flashes **KEY FOUND**.
 - **◉ Probe Tracker** — monitors clients probing for networks and ranks the SSIDs
   they're hunting (`/tmp/probe/probes.json`). Its top names feed the **Beacon Flood**
   (tick "borrow probed names").

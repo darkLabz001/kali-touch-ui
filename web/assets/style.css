@@ -1230,3 +1230,11 @@ body::after {
 .fl-fill { height: 100%; background: #39ff14; border-radius: 3px; min-width: 2px; }
 
 .lg-ln.ok { color: #39ff14; text-shadow: 0 0 8px rgba(57,255,20,.55); }
+
+.hs-alert {
+  margin: 8px 0 2px; padding: 10px 12px; border: 1px solid #0e3a33; border-radius: 10px;
+  background: #05100e; color: #9febb9; font-family: 'Fira Code', monospace; font-size: 13px;
+  text-align: center; letter-spacing: .06em; min-height: 16px;
+}
+.hs-alert.ok { border-color: #0f6b3a; background: #05240f; color: #39ff14; font-weight: 700; text-shadow: 0 0 10px rgba(57,255,20,.6); }
+.hs-alert.warn { border-color: #7a4d00; background: #1a1205; color: #ffb000; }

