@@ -2618,7 +2618,7 @@ def _ota_run():
             subprocess.Popen(
                 "pkill -f 'chrom[i]um.*--app=http://127.0.0.1:8080' 2>/dev/null; "
                 "if command -v systemd-run >/dev/null 2>&1; then "
-                "sudo -n systemd-run --collect --quiet sh -c "
+                "sudo -n systemd-run --collect --quiet --no-block sh -c "
                 "'sleep 2; systemctl restart kali-touchui'; "
                 "else sleep 2; sudo -n systemctl restart kali-touchui; fi",
                 shell=True,
