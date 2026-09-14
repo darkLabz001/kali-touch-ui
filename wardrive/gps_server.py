@@ -20,6 +20,7 @@ import logging
 import os
 import ssl
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -33,6 +34,26 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = int(os.environ.get("WARDRIVER_PORT", "8888"))
 PHONE_LINK_TIMEOUT = 16.0
+
+# Optional callback fired on every contact (fix batch, legacy /gps, ping or
+# stop). Set by the standalone keeper main() so the touch backend can see
+# phone-link state across processes; unused in the headless drive flow.
+_after_contact = None
+
+
+def set_contact_hook(fn):
+    """Install a callback invoked whenever the phone talks to us. Idempotent;
+    returns None. Not used by the headless drive, only by the keeper."""
+    global _after_contact
+    _after_contact = fn
+
+
+def _notify_contact():
+    if _after_contact is not None:
+        try:
+            _after_contact()
+        except Exception:
+            pass
 
 
 def make_cert(cert_dir):
@@ -96,6 +117,7 @@ class GPSFeedServer(BaseHTTPRequestHandler):
             )
         with self._contact_lock:
             type(self).last_contact = time.monotonic()
+        _notify_contact()
 
     @staticmethod
     def _coerce(raw):
@@ -170,6 +192,7 @@ class GPSFeedServer(BaseHTTPRequestHandler):
         if route == '/gps/ping':
             with self._contact_lock:
                 type(self).last_contact = time.monotonic()
+            _notify_contact()
             self._reply(200, b'OK')
             return
 
@@ -177,6 +200,7 @@ class GPSFeedServer(BaseHTTPRequestHandler):
             with self._contact_lock:
                 type(self).phone_stopped = True
                 type(self).last_contact = time.monotonic()
+            _notify_contact()
             self._reply(200, b'OK')
             return
 
@@ -214,3 +238,117 @@ def link_is_up():
     with GPSFeedServer._contact_lock:
         last = GPSFeedServer.last_contact
     return bool(last) and (time.monotonic() - last) <= PHONE_LINK_TIMEOUT
+
+
+# ---------------------------------------------------------------------------
+# Always-on "keeper" mode: an idling phone-GPS link that owns :8888 even when
+# no drive is running, so the warpdrive QR is scannable at any time and a fix
+# streamed during idle is picked up the moment START DRIVE is pressed. The
+# touch backend spawns this as its own process and swaps it in/out around
+# headless drives (never both at once).
+# ---------------------------------------------------------------------------
+
+
+class _FileGPS(object):
+    """Minimal receiver that persists each phone fix so a different process
+    (the dashboard / a later drive) can consume it. Signature-compatible with
+    wardriver.GPS.set_location so the shared GPSFeedServer can drive it."""
+
+    def __init__(self, path, lock):
+        self.path = path
+        self.lock = lock
+
+    def set_location(self, lat, lon, accuracy=None, altitude=None, speed=None,
+                     heading=None, source="phone", at=None):
+        try:
+            latest = {
+                "lat": round(float(lat), 6),
+                "lon": round(float(lon), 6),
+                "acc": accuracy,
+                "alt": altitude,
+                "spd": speed,
+                "hdg": heading,
+                "t": at,
+                "recv": time.time(),
+            }
+            with self.lock:
+                tmp = self.path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(latest), encoding="utf-8")
+                os.replace(tmp, self.path)
+        except (OSError, ValueError):
+            logger.exception("could not persist lastfix")
+        _notify_contact()
+
+
+class KeeperFeed(object):
+    """Stand-in for a WardriveSession: persists fixes + link freshness so the
+    UI can show live phone-GPS even with no drive running."""
+
+    def __init__(self, home):
+        home = Path(home)
+        self.data_dir = home / ".wardriver"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.lastfix = self.data_dir / "lastfix.json"
+        self.linkjson = self.data_dir / "link.json"
+        self.lock = threading.Lock()
+        self.gps = _FileGPS(self.lastfix, self.lock)
+        self.clock = ClockSync()
+
+    def note_contact(self):
+        with self.lock:
+            tmp = self.data_dir / "link.json.tmp"
+            tmp.write_text(json.dumps({"contact": time.time()}),
+                           encoding="utf-8")
+            os.replace(tmp, self.linkjson)
+
+
+def main():
+    import argparse
+
+    ap = argparse.ArgumentParser(description=(
+        "Always-on phone-GPS link server for the Kali Touch UI."))
+    ap.add_argument("--port", type=int, default=DEFAULT_PORT)
+    ap.add_argument("--home", default=None,
+                    help="home dir for ~/.wardriver data (default: real user)")
+    args = ap.parse_args()
+
+    sudo = os.environ.get("SUDO_USER")
+    if args.home:
+        home = Path(args.home)
+    elif sudo:
+        try:
+            import pwd
+            home = Path(pwd.getpwnam(sudo).pw_dir)
+        except KeyError:
+            home = Path.home()
+    else:
+        home = Path.home()
+
+    data_dir = home / ".wardriver"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        filename=str(data_dir / "gps_link.log"),
+        filemode="a",
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
+    logger.info("phone-GPS keeper starting via %s", sys.argv)
+
+    tls = subprocess.run(["sh", "-c", "command -v openssl"],
+                         stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL).returncode == 0
+    feed = KeeperFeed(home)
+    set_contact_hook(feed.note_contact)
+    try:
+        url, _srv = start_server(feed, args.port, data_dir, tls=tls)
+    except OSError as exc:
+        logger.error("could not bind phone-GPS link on :%s: %s", args.port, exc)
+        return 1
+    logger.info("phone-GPS link live at %s (tls=%s)", url, tls)
+    while True:
+        time.sleep(3600)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

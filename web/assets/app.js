@@ -1944,7 +1944,7 @@ function showWardrive() {
 
   // phone / QR area
   const qrHead = el("div", "re-tabs");
-  qrHead.appendChild(el("span", "ra-sub", "PHONE LINK — scan the QR, accept the cert, tap START ON THE PHONE"));
+  qrHead.appendChild(el("span", "ra-sub", "PHONE LINK — always live — scan the QR, accept the cert, tap START ON THE PHONE"));
   page.appendChild(qrHead);
   const qrBox = el("div", "wardrive-qr");
   qrBox.id = "wardrive-qr";
@@ -2012,21 +2012,20 @@ function wardriveRender(st) {
   const qr = document.getElementById("wardrive-qr");
   if (qr) {
     qr.innerHTML = "";
-    if (st.running) {
-      if (st.qr) {
-        const imgBox = el("div", "wdr-qr-img");
-        const img = el("img");
-        img.src = st.qr;
-        img.alt = "QR";
-        imgBox.appendChild(img);
-        qr.appendChild(imgBox);
-      }
-      const urlBox = el("div", "wdr-qr-url", st.url || "…");
-      qr.appendChild(urlBox);
-      const tip = el("div", "wdr-qr-tip", "phone must be on the same network — open this with your phone's camera:");
-      qr.prepend(tip);
+    if (st.qr) {
+      const imgBox = el("div", "wdr-qr-img");
+      const img = el("img");
+      img.src = st.qr;
+      img.alt = "QR";
+      imgBox.appendChild(img);
+      qr.appendChild(imgBox);
+      qr.appendChild(el("div", "wdr-qr-url", st.url || "…"));
+      qr.prepend(el("div", "wdr-qr-tip",
+        st.running
+          ? "phone must be on the same network — open this with your phone's camera:"
+          : "phone GPS link is LIVE — scan, tap START on the phone, then START DRIVE here to record."));
     } else {
-      const idle = el("div", "wdr-qr-tip", "start a drive and the phone link QR appears here.");
+      const idle = el("div", "wdr-qr-tip", "phone GPS link is starting — scan as soon as it appears.");
       qr.appendChild(idle);
     }
   }

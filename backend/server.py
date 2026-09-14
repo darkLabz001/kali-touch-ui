@@ -1282,7 +1282,10 @@ threading.Thread(target=run_feed, daemon=True).start()
 # ---------------- Wardriving (phone-GPS headless drive) ----------------
 WARDIRVE_HEADLESS = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "wardrive", "headless.py")
+WARDIRVE_GPSLINK = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "wardrive", "gps_server.py")
 WARDIRVE_PORT = int(os.environ.get("WARDRIVER_PORT", "8888"))
+PHONE_LINK_TIMEOUT = 16.0
 
 
 def lan_address(host_hint=""):
@@ -1337,6 +1340,7 @@ class WardriveManager:
 
     def __init__(self):
         self.proc = None
+        self.keeper = None
         self.queue = []
         self.lock = threading.Lock()
         self.last = {}
@@ -1347,11 +1351,63 @@ class WardriveManager:
     def running(self):
         return self.proc is not None and self.proc.poll() is None
 
+    # -- always-on phone GPS link (keeper) -----------------------------------
+
+    def _phone_link_ok(self):
+        return self.keeper is not None and self.keeper.poll() is None
+
+    def _stop_phone_link(self):
+        """Drop the idle keeper so a drive may take over :8888."""
+        if self.keeper is not None:
+            try:
+                self.keeper.terminate()
+                self.keeper.wait(5)
+            except (subprocess.TimeoutExpired, OSError):
+                try:
+                    self.keeper.kill()
+                except OSError:
+                    pass
+            self.keeper = None
+
+    def _ensure_phone_link(self):
+        """Bring the idle phone-GPS link up unless a drive already owns it."""
+        if self.running() or self._phone_link_ok():
+            return
+        try:
+            self.keeper = subprocess.Popen(
+                ["sudo", "-n", "python3", WARDIRVE_GPSLINK,
+                 "--port", str(self.port), "--home", os.path.expanduser("~")],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env=dict(os.environ, PYTHONUNBUFFERED="1"))
+        except OSError:
+            self.keeper = None
+
+    def _keeper_link_state(self):
+        """Phone/GPS state from the idle keeper's files, or 'down'/'none'."""
+        home = os.path.expanduser("~")
+        down = {"phone": "down", "gps": "none"}
+        if not self._phone_link_ok():
+            return down
+        now = time.time()
+        try:
+            link = json.load(open(os.path.join(home, ".wardriver", "link.json")))
+            fix = json.load(open(os.path.join(home, ".wardriver", "lastfix.json")))
+        except (OSError, ValueError):
+            return dict(down, gps="none")
+        phone = "up" if (now - link.get("contact", 0)) <= PHONE_LINK_TIMEOUT else "down"
+        if "lat" not in fix or not isinstance(fix.get("lat"), (int, float)):
+            gps = "none"
+        else:
+            recv = fix.get("recv", 0)
+            gps = "fresh" if (now - recv) <= PHONE_LINK_TIMEOUT else "stale"
+        return {"phone": phone, "gps": gps}
+
     def start(self, iface=None, ble=False):
         if self.running():
             return False, "wardriving is already running"
         if Handler._apt_busy():
             return False, "apt is busy"
+        self._stop_phone_link()
         try:
             os.makedirs(os.path.expanduser("~/.wardriver/scans"), exist_ok=True)
         except OSError:
@@ -1409,19 +1465,27 @@ class WardriveManager:
                 except OSError:
                     pass
             self.proc = None
+        self._ensure_phone_link()
 
     def status(self, host_hint=""):
+        self._ensure_phone_link()
         with self.lock:
             last = dict(self.last)
             boot = dict(self.boot)
             tail = list(self.queue)
         running = self.running()
+        host = lan_address(host_hint)
         url = ""
-        if running and boot.get("gps_url"):
-            host = lan_address(host_hint)
+        if boot.get("gps_url"):
             url = boot["gps_url"].replace("<host>", host)
+        if not url:
+            url = "%s://%s:%s/" % ("https", host, self.port)
+        last = dict(last)
+        if not running:
+            last.update(self._keeper_link_state())
         return {
             "running": running,
+            "phone_link": running or self._phone_link_ok(),
             "iface": self.iface,
             "port": self.port,
             "last": last,
@@ -2469,7 +2533,7 @@ OTA_REPO = "https://github.com/darkLabz001/kali-touch-ui.git"
 OTA_BRANCH = "main"
 OTA_DIR = "/opt/kali-touch-ui"
 OTA_LOG = "/tmp/ota.log"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 _ota_busy = False
 _ota_store_changed = False
 _ota_lock = threading.Lock()
@@ -2775,10 +2839,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"busy": busy, "log": tail}).encode())
         elif path == "/api/wardrive/status":
             st = WARDIRVE.status(self.headers.get("Host", ""))
-            if not st["running"]:
-                st["qr"] = None
-            else:
-                st["qr"] = WARDIRVE.qr_png_data(st["url"])
+            st["qr"] = WARDIRVE.qr_png_data(st["url"]) if st.get("url") else None
             self._send(200, json.dumps(st).encode())
         elif path == "/api/rogue/status":
             self._send(200, json.dumps(ROGUE.status()).encode())

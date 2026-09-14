@@ -149,10 +149,12 @@ The Home screen surfaces custom hand-built tools for the field kit (`Custom Tool
 
 - **◈ Wardrive** — one tap starts a Wi-Fi/BLE scan that autosaves a WiGLE CSV
   (`~/.wardriver/scans/wardriving_YYYYMMDD_HHMMSS.csv` with lat/lon/accuracy).
-  A QR code on screen points your *phone* at the Pi's HTTPS page (`:8888`, cert is
-  self-signed — accept it), which streams GPS fixes back over
-  `POST /gps/batch`; the scan is only geotagged while the phone reports a fresh fix.
-  Tap **Stop** when done — the file is flushed on a clean stop.
+  The phone-GPS link is **always live**: the QR (`https://<pi>:8888/`, self-signed
+  cert — accept it) is shown even when idle, so you can connect the phone first,
+  then hit **Start**; fixes stream in over `POST /gps/batch` and are remembered
+  across drives via `~/.wardriver/lastfix.json`. The scan is only geotagged while
+  the phone reports a fresh fix. Tap **Stop** when done — the file is flushed on
+  a clean stop.
 - **⚑ Rogue AP** — an evil-twin AP (`toolwlan0` → `Free-WiFi`, ch 6) with
   `dnsmasq` resolving everything to `10.66.66.1` and a captive portal on `:80`.
   Victims tapping "Connect" dump their credentials to `/tmp/rogue/creds.csv`,
