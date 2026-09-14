@@ -1073,6 +1073,8 @@ class HandshakeManager:
             return False, "could not bring %s to monitor mode" % iface
         try:
             os.makedirs(HS_DIR, exist_ok=True)
+            os.makedirs(HS_HASHES, exist_ok=True)
+            os.makedirs(HS_POTS, exist_ok=True)
         except OSError:
             pass
         base = HS_DIR + "/" + _safe(essid or bssid)
@@ -2694,7 +2696,7 @@ OTA_REPO = "https://github.com/darkLabz001/kali-touch-ui.git"
 OTA_BRANCH = "main"
 OTA_DIR = "/opt/kali-touch-ui"
 OTA_LOG = "/tmp/ota.log"
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.3"
 _ota_busy = False
 _ota_store_changed = False
 _ota_lock = threading.Lock()
