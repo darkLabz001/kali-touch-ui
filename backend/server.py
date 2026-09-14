@@ -2611,10 +2611,16 @@ def _ota_run():
             # service's whole cgroup, so a pkill after it would never run and
             # Chromium would keep serving the pre-update page from memory.
             # The `[c]` bracket makes the pattern not match this shell's own
-            # cmdline (which embeds the pattern text), so the restart survives.
+            # cmdline (which embeds the pattern text). The restart runs under
+            # `systemd-run` so it's a cgroup of its own: `systemctl restart`
+            # from inside this unit would be SIGKILLed while systemd reaps
+            # this service's cgroup, then never actually restart anything.
             subprocess.Popen(
                 "pkill -f 'chrom[i]um.*--app=http://127.0.0.1:8080' 2>/dev/null; "
-                "sleep 2; sudo -n systemctl restart kali-touchui",
+                "if command -v systemd-run >/dev/null 2>&1; then "
+                "sudo -n systemd-run --collect --quiet sh -c "
+                "'sleep 2; systemctl restart kali-touchui'; "
+                "else sleep 2; sudo -n systemctl restart kali-touchui; fi",
                 shell=True,
             )
 
