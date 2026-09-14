@@ -2610,8 +2610,10 @@ def _ota_run():
             # Relaunch the kiosk FIRST: the backend restart below reaps this
             # service's whole cgroup, so a pkill after it would never run and
             # Chromium would keep serving the pre-update page from memory.
+            # The `[c]` bracket makes the pattern not match this shell's own
+            # cmdline (which embeds the pattern text), so the restart survives.
             subprocess.Popen(
-                "pkill -f 'chromium.*--app=http://127.0.0.1:8080' 2>/dev/null; "
+                "pkill -f 'chrom[i]um.*--app=http://127.0.0.1:8080' 2>/dev/null; "
                 "sleep 2; sudo -n systemctl restart kali-touchui",
                 shell=True,
             )
