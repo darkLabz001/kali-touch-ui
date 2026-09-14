@@ -1218,3 +1218,15 @@ body::after {
   border-radius: 8px; padding: 7px 8px; font-size: 14px; font-family: 'Fira Code', monospace;
 }
 .wdr-inp.wdr-sm { flex: 0 0 52px; }
+
+/* ================= Field-kit tools ================= */
+.mini-btn {
+  flex: 0 0 auto; background: #0b2e26; color: #9febb9; border: 1px solid #17513b;
+  border-radius: 8px; padding: 7px 10px; font-size: 12px; letter-spacing: 1px; font-family: 'Fira Code', monospace;
+}
+.mini-btn:active { transform: scale(.95); background: #145a44; }
+
+.fl-bar { height: 4px; background: #061412; border-radius: 3px; margin: 3px 0 3px 24px; overflow: hidden; }
+.fl-fill { height: 100%; background: #39ff14; border-radius: 3px; min-width: 2px; }
+
+.lg-ln.ok { color: #39ff14; text-shadow: 0 0 8px rgba(57,255,20,.55); }

@@ -76,7 +76,7 @@ function showHome() {
     return card;
   };
   const ready = state.data.launchers.filter(x => x.exists).length;
-  grid.appendChild(mkc("self-built", "◈", "Custom Tools", "3 apps", "acc-cy", () => showCustomTools()));
+  grid.appendChild(mkc("self-built", "◈", "Custom Tools", "9 apps", "acc-cy", () => showCustomTools()));
   grid.appendChild(mkc("launcher", "⚒", "Click-Run Tools", ready + "/" + state.data.launchers.length + " ready", "acc-gr", () => showLaunchers()));
   state.data.sections.forEach(([id, title, ico]) => {
     const n = state.data.tools.filter(t => t.section === id).length;
@@ -137,7 +137,7 @@ function showCustomTools() {
   c.innerHTML = "";
   const head = el("div", "section-head");
   head.appendChild(el("h2", null, "◈ Custom Tools"));
-  head.appendChild(el("div", "hint", "5 apps · self-built"));
+  head.appendChild(el("div", "hint", "9 apps · self-built"));
   c.appendChild(head);
   const list = el("div", "tool-list");
   const apps = [
@@ -146,6 +146,12 @@ function showCustomTools() {
     ["◎", "WiFi Radar", "live radar sweep of scanned APs", "#ffc93d", showRadar],
     ["◈", "Wardrive", "phone-GPS drive · QR page · WiGLE CSV", "#ff7ab8", showWardrive],
     ["⚑", "Rogue AP", "evil twin · captive portal · cred capture", "#ffb300", showRogue],
+    ["◉", "Probe Tracker", "who's prospecting which SSIDs · feeds flood", "#39ff14", showProbe],
+    ["⚡", "Deauth Blaster", "targeted (or everyone) deauth", "#ff5c39", showDeauth],
+    ["◐", "Beacon Flood", "fake SSIDs · borrow probed names", "#d0a8ff", showFlood],
+    ["✪", "Portal Kit", "phishing portal themes · clone-a-login", "#4fd1ff", showPortal],
+    ["❒", "Login Clone", "clone a login page onto the portal", "#7bffb0", showClone],
+    ["⛧", "Auto-Pentest", "capture→deauth→crack→decrypt one-press", "#ff5577", showPentest],
   ];
   apps.forEach(([ico, title, sub, col, fn]) => {
     const b = el("div", "tool-btn");
@@ -981,6 +987,12 @@ document.querySelector(".btn-back").onclick = () => {
   leaveRadar();
   leaveWardrive();
   leaveRogue();
+  leaveProbe();
+  leaveDeauth();
+  leaveFlood();
+  leavePortal();
+  leaveClone();
+  leavePentest();
   if (state.terminal || state.settings) showHome();
   else if (state.tool) showSection(state.section, sectionTitle(state.section));
   else showHome();
@@ -2578,6 +2590,817 @@ function leaveWardrive() {
 function leaveRogue() {
   roguePageOpen = false;
   if (rogueTimer) { clearInterval(rogueTimer); rogueTimer = null; }
+}
+
+/* ================= Probe Tracker ================= */
+
+let probePageOpen = false;
+let probeTimer = null;
+
+function showProbe() {
+  state.terminal = false; state.settings = false; state.tool = null; state.section = null; state.running = false;
+  document.querySelector(".btn-back").style.display = "flex";
+  probePageOpen = true;
+  const c = document.querySelector(".content");
+  c.innerHTML = "";
+  const page = el("div", "recon");
+  const head = el("div", "section-head");
+  head.appendChild(el("h2", null, "◉ PROBE TRACKER"));
+  head.appendChild(el("div", "re-pine", "who's prospecting which SSIDs"));
+  page.appendChild(head);
+  const stats = el("div", "re-stats");
+  stats.id = "probe-stats";
+  page.appendChild(stats);
+  const ctr = el("div", "wardrive-ctr");
+  const ifRow = el("div", "wdr-row");
+  ifRow.appendChild(el("span", "wdr-lbl", "card"));
+  const sel = el("select", "wdr-sel");
+  sel.id = "probe-iface";
+  ifRow.appendChild(sel);
+  ctr.appendChild(ifRow);
+  const bar = el("div", "re-bar");
+  const start = el("button", "big-btn run", "▶ LISTEN");
+  start.id = "probe-start";
+  start.onclick = () => probeStart();
+  const stop = el("button", "big-btn stop", "■ STOP");
+  stop.id = "probe-stop";
+  stop.onclick = async () => { try { await fetch("/api/probe/stop", { method: "POST" }); } catch (e) {} };
+  bar.append(start, stop);
+  ctr.appendChild(bar);
+  page.appendChild(ctr);
+  const tHead = el("div", "re-tabs");
+  tHead.appendChild(el("span", "ra-sub", "SSIDs BEING PROBED"));
+  page.appendChild(tHead);
+  const top = el("div", "re-table");
+  top.id = "probe-top";
+  page.appendChild(top);
+  const cHead = el("div", "re-tabs");
+  cHead.appendChild(el("span", "ra-sub", "PROBING CLIENTS"));
+  page.appendChild(cHead);
+  const clients = el("div", "re-table");
+  clients.id = "probe-clients";
+  page.appendChild(clients);
+  c.appendChild(page);
+  const tick = async () => {
+    if (!probePageOpen) return;
+    try { probeRender(await fetch("/api/probe/status").then(r => r.json())); } catch (e) {}
+  };
+  probeTimer = setInterval(tick, 2500);
+  tick();
+}
+
+function probeRender(st) {
+  const sel = document.getElementById("probe-iface");
+  if (sel && st.ifaces) {
+    const cur = sel.value;
+    sel.innerHTML = "";
+    const opts = [["", "auto"], ...(st.ifaces || []).map(i => [i, i])];
+    opts.forEach(([v, lab]) => { const o = el("option", null, lab); o.value = v; sel.appendChild(o); });
+    sel.value = cur || st.iface || "";
+  }
+  const stBox = document.getElementById("probe-stats");
+  if (stBox) {
+    stBox.innerHTML = "";
+    [
+      ["RUN", st.running ? "▶ live" : "idle", st.running ? "ok" : "idle"],
+      ["iface", st.iface || "—", ""],
+      ["SSIDs", st.seen != null ? st.seen : 0, ""],
+      ["clients", st.clients ? st.clients.length : 0, ""],
+    ].forEach(([k, v, cls]) => {
+      const cell = el("div", "re-stat");
+      cell.append(el("span", "re-stat-lab", k), el("span", "re-stat-val" + (cls ? " " + cls : ""), v));
+      stBox.appendChild(cell);
+    });
+  }
+  const sbtn = document.getElementById("probe-start");
+  if (sbtn) sbtn.disabled = st.running;
+  const top = document.getElementById("probe-top");
+  if (top) {
+    top.innerHTML = "";
+    const rows = st.top || [];
+    if (!rows.length) top.appendChild(el("div", "re-empty", st.running ? "waiting for probes…" : "listening…"));
+    const max = Math.max(1, ...rows.map(r => r.count));
+    rows.forEach(r => {
+      const row = el("div", "ra-row");
+      const m = el("div", "ra-main");
+      m.appendChild(el("span", "ra-sig", "◉"));
+      const mid = el("div", "tb-mid");
+      mid.appendChild(el("div", null, '"' + r.ssid + '"'));
+      const fill = el("div", "fl-bar");
+      const pixel = el("div", "fl-fill");
+      pixel.style.width = Math.round(100 * r.count / max) + "%";
+      fill.appendChild(pixel);
+      mid.appendChild(fill);
+      mid.appendChild(el("div", "sub", r.count + " clients ringing"));
+      m.appendChild(mid);
+      row.appendChild(m);
+      top.appendChild(row);
+    });
+  }
+  const cl = document.getElementById("probe-clients");
+  if (cl) {
+    cl.innerHTML = "";
+    const rows = st.clients || [];
+    if (!rows.length) cl.appendChild(el("div", "re-empty", "no probing clients seen yet."));
+    rows.forEach(cx => {
+      const row = el("div", "ra-row");
+      const m = el("div", "ra-main");
+      m.appendChild(el("span", "ra-sig", "»"));
+      const mid = el("div", "tb-mid");
+      mid.appendChild(el("div", null, cx.mac  + "  ·  " + (cx.power || "?") + " dBm"));
+      mid.appendChild(el("div", "sub", "wants: " + cx.names.join(" , ")));
+      m.appendChild(mid);
+      row.appendChild(m);
+      cl.appendChild(row);
+    });
+  }
+}
+
+async function probeStart() {
+  const iface = document.getElementById("probe-iface").value;
+  const sbtn = document.getElementById("probe-start");
+  if (sbtn) { sbtn.disabled = true; sbtn.textContent = "arming…"; }
+  try {
+    const r = await fetch("/api/probe/start", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ iface }),
+    }).then(r => r.json());
+    if (sbtn) {
+      sbtn.textContent = r.ok ? "▶ LISTEN" : "failed: " + (r.msg || "?");
+      setTimeout(() => { if (sbtn) sbtn.textContent = "▶ LISTEN"; }, 3000);
+    }
+  } catch (e) { if (sbtn) { sbtn.textContent = "▶ LISTEN"; sbtn.disabled = false; } }
+}
+
+function leaveProbe() {
+  probePageOpen = false;
+  if (probeTimer) { clearInterval(probeTimer); probeTimer = null; }
+}
+
+/* ================= Deauth Blaster ================= */
+
+let deauthPageOpen = false;
+let deauthTimer = null;
+
+function showDeauth() {
+  state.terminal = false; state.settings = false; state.tool = null; state.section = null; state.running = false;
+  document.querySelector(".btn-back").style.display = "flex";
+  deauthPageOpen = true;
+  const c = document.querySelector(".content");
+  c.innerHTML = "";
+  const page = el("div", "recon");
+  const head = el("div", "section-head");
+  head.appendChild(el("h2", null, "⚡ DEAUTH BLASTER"));
+  head.appendChild(el("div", "re-pine", "targeted — or everyone-cuts"));
+  page.appendChild(head);
+  const stats = el("div", "re-stats");
+  stats.id = "deauth-stats";
+  page.appendChild(stats);
+  const ctr = el("div", "wardrive-ctr");
+  const modeRow = el("div", "wdr-row");
+  modeRow.appendChild(el("span", "wdr-lbl", "mode"));
+  const mode = el("select", "wdr-sel");
+  mode.id = "deauth-mode";
+  [["target", "targeted AP"], ["flood", "EVERYONE in range"]].forEach(([v, lab]) => {
+    const o = el("option", null, lab); o.value = v; mode.appendChild(o);
+  });
+  modeRow.appendChild(mode);
+  ctr.appendChild(modeRow);
+  const bRow = el("div", "wdr-row");
+  bRow.appendChild(el("span", "wdr-lbl", "bssid"));
+  const bb = el("input", "wdr-inp");
+  bb.id = "deauth-bssid";
+  bb.placeholder = "AA:BB:CC:DD:EE:FF";
+  bRow.appendChild(bb);
+  const sc = el("button", "mini-btn", "SCAN");
+  sc.id = "deauth-scan";
+  sc.onclick = () => deauthScan();
+  bRow.appendChild(sc);
+  ctr.appendChild(bRow);
+  const cRow = el("div", "wdr-row");
+  cRow.appendChild(el("span", "wdr-lbl", "ch"));
+  const ch = el("input", "wdr-inp wdr-sm");
+  ch.id = "deauth-ch";
+  ch.value = "6";
+  ch.inputMode = "numeric";
+  cRow.appendChild(ch);
+  cRow.appendChild(el("span", "wdr-lbl", "client"));
+  const cl = el("input", "wdr-inp");
+  cl.id = "deauth-client";
+  cl.placeholder = "optional";
+  cRow.appendChild(cl);
+  ctr.appendChild(cRow);
+  const bar = el("div", "re-bar");
+  const start = el("button", "big-btn run", "▶ BLAST");
+  start.id = "deauth-start";
+  start.onclick = () => deauthStart();
+  const stop = el("button", "big-btn stop", "■ STOP");
+  stop.id = "deauth-stop";
+  stop.onclick = async () => { try { await fetch("/api/deauth/stop", { method: "POST" }); } catch (e) {} };
+  bar.append(start, stop);
+  ctr.appendChild(bar);
+  page.appendChild(ctr);
+  const aHead = el("div", "re-tabs");
+  aHead.appendChild(el("span", "ra-sub", "PICK A TARGET FROM SCAN"));
+  page.appendChild(aHead);
+  const aps = el("div", "re-table");
+  aps.id = "deauth-aps";
+  page.appendChild(aps);
+  c.appendChild(page);
+  const tick = async () => {
+    if (!deauthPageOpen) return;
+    try { deauthRender(await fetch("/api/deauth/status").then(r => r.json())); } catch (e) {}
+  };
+  deauthTimer = setInterval(tick, 2500);
+  tick();
+}
+
+function deauthRender(st) {
+  const stBox = document.getElementById("deauth-stats");
+  if (stBox) {
+    stBox.innerHTML = "";
+    [
+      ["RUN", st.running ? "▶ blasting" : "idle", st.running ? "ok" : "idle"],
+      ["mode", st.mode || "—", ""],
+      ["target", st.target || "—", ""],
+      ["elapsed", st.elapsed ? st.elapsed + "s" : "—", ""],
+    ].forEach(([k, v, cls]) => {
+      const cell = el("div", "re-stat");
+      cell.append(el("span", "re-stat-lab", k), el("span", "re-stat-val" + (cls ? " " + cls : ""), v));
+      stBox.appendChild(cell);
+    });
+  }
+  const sbtn = document.getElementById("deauth-start");
+  if (sbtn) sbtn.disabled = st.running;
+}
+
+async function deauthScan() {
+  const out = document.getElementById("deauth-aps");
+  if (!out) return;
+  out.innerHTML = "";
+  out.appendChild(el("div", "re-empty", "scanning 7s…"));
+  try {
+    const r = await fetch("/api/deauth/scan", { method: "POST" }).then(r => r.json());
+    out.innerHTML = "";
+    const rows = r.aps || [];
+    if (!rows.length) out.appendChild(el("div", "re-empty", "no APs heard."));
+    rows.forEach(a => {
+      const row = el("div", "ra-row");
+      const m = el("div", "ra-main");
+      m.appendChild(el("span", "ra-sig", "✕"));
+      const mid = el("div", "tb-mid");
+      mid.appendChild(el("div", null, (a.essid || "(hidden)") + "  ·  ch " + a.channel));
+      mid.appendChild(el("div", "sub", a.bssid + "  " + a.power + " dBm"));
+      m.appendChild(mid);
+      row.appendChild(m);
+      row.onclick = () => {
+        const b = document.getElementById("deauth-bssid");
+        const ch = document.getElementById("deauth-ch");
+        if (b) b.value = a.bssid;
+        if (ch) ch.value = a.channel;
+      };
+      out.appendChild(row);
+    });
+  } catch (e) { out.innerHTML = ""; out.appendChild(el("div", "re-empty", "scan failed")); }
+}
+
+async function deauthStart() {
+  const mode = document.getElementById("deauth-mode").value;
+  const bssid = document.getElementById("deauth-bssid").value;
+  const ch = document.getElementById("deauth-ch").value;
+  const client = document.getElementById("deauth-client").value;
+  const sbtn = document.getElementById("deauth-start");
+  if (sbtn) { sbtn.disabled = true; sbtn.textContent = "arming…"; }
+  try {
+    const r = await fetch("/api/deauth/start", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode, bssid, channel: ch, client }),
+    }).then(r => r.json());
+    if (sbtn) {
+      sbtn.textContent = r.ok ? "▶ BLAST" : "failed: " + (r.msg || "?");
+      setTimeout(() => { if (sbtn) sbtn.textContent = "▶ BLAST"; }, 3500);
+    }
+  } catch (e) { if (sbtn) { sbtn.textContent = "▶ BLAST"; sbtn.disabled = false; } }
+}
+
+function leaveDeauth() {
+  deauthPageOpen = false;
+  if (deauthTimer) { clearInterval(deauthTimer); deauthTimer = null; }
+}
+
+/* ================= Beacon Flood ================= */
+
+let floodPageOpen = false;
+let floodTimer = null;
+
+function showFlood() {
+  state.terminal = false; state.settings = false; state.tool = null; state.section = null; state.running = false;
+  document.querySelector(".btn-back").style.display = "flex";
+  floodPageOpen = true;
+  const c = document.querySelector(".content");
+  c.innerHTML = "";
+  const page = el("div", "recon");
+  const head = el("div", "section-head");
+  head.appendChild(el("h2", null, "◐ BEACON FLOOD"));
+  head.appendChild(el("div", "re-pine", "fake SSIDs flooding the air"));
+  page.appendChild(head);
+  const stats = el("div", "re-stats");
+  stats.id = "flood-stats";
+  page.appendChild(stats);
+  const ctr = el("div", "wardrive-ctr");
+  const sRow = el("div", "wdr-row");
+  sRow.appendChild(el("span", "wdr-lbl", "ssids"));
+  const ss = el("input", "wdr-inp");
+  ss.id = "flood-ssids";
+  ss.placeholder = "Starbucks-Guest, ATT, iPhone, …";
+  sRow.appendChild(ss);
+  ctr.appendChild(sRow);
+  const opts = el("div", "wdr-row");
+  const chLbl = el("label", "wdr-ble");
+  const fchk = el("input");
+  fchk.type = "checkbox";
+  fchk.id = "flood-borrow";
+  chLbl.appendChild(fchk);
+  chLbl.appendChild(el("span", null, " borrow probed names"));
+  opts.appendChild(chLbl);
+  const hLbl = el("label", "wdr-ble");
+  const hchk = el("input");
+  hchk.type = "checkbox";
+  hchk.id = "flood-hidden";
+  hLbl.appendChild(hchk);
+  hLbl.appendChild(el("span", null, " hidden"));
+  opts.appendChild(hLbl);
+  ctr.appendChild(opts);
+  const chRow = el("div", "wdr-row");
+  chRow.appendChild(el("span", "wdr-lbl", "channels"));
+  const cc = el("input", "wdr-inp");
+  cc.id = "flood-channels";
+  cc.value = "1,6,11";
+  chRow.appendChild(cc);
+  ctr.appendChild(chRow);
+  const bar = el("div", "re-bar");
+  const start = el("button", "big-btn run", "▶ FLOOD");
+  start.id = "flood-start";
+  start.onclick = () => floodStart();
+  const stop = el("button", "big-btn stop", "■ STOP");
+  stop.id = "flood-stop";
+  stop.onclick = async () => { try { await fetch("/api/flood/stop", { method: "POST" }); } catch (e) {} };
+  bar.append(start, stop);
+  ctr.appendChild(bar);
+  page.appendChild(ctr);
+  c.appendChild(page);
+  const tick = async () => {
+    if (!floodPageOpen) return;
+    try { floodRender(await fetch("/api/flood/status").then(r => r.json())); } catch (e) {}
+  };
+  floodTimer = setInterval(tick, 2500);
+  tick();
+}
+
+function floodRender(st) {
+  const stBox = document.getElementById("flood-stats");
+  if (stBox) {
+    stBox.innerHTML = "";
+    [
+      ["RUN", st.running ? "▶ flooding" : "idle", st.running ? "ok" : "idle"],
+      ["iface", st.iface || "—", ""],
+      ["frames", st.sent != null ? st.sent : 0, ""],
+    ].forEach(([k, v, cls]) => {
+      const cell = el("div", "re-stat");
+      cell.append(el("span", "re-stat-lab", k), el("span", "re-stat-val" + (cls ? " " + cls : ""), v));
+      stBox.appendChild(cell);
+    });
+  }
+  const sbtn = document.getElementById("flood-start");
+  if (sbtn) sbtn.disabled = st.running;
+}
+
+async function floodStart() {
+  const ssids = document.getElementById("flood-ssids").value;
+  const channels = document.getElementById("flood-channels").value;
+  const borrow = document.getElementById("flood-borrow").checked;
+  const hidden = document.getElementById("flood-hidden").checked;
+  const sbtn = document.getElementById("flood-start");
+  if (sbtn) { sbtn.disabled = true; sbtn.textContent = "arming…"; }
+  try {
+    const r = await fetch("/api/flood/start", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ssids, channels, borrow, hidden }),
+    }).then(r => r.json());
+    if (sbtn) {
+      sbtn.textContent = r.ok ? "▶ FLOOD" : "failed: " + (r.msg || "?");
+      setTimeout(() => { if (sbtn) sbtn.textContent = "▶ FLOOD"; }, 3500);
+    }
+  } catch (e) { if (sbtn) { sbtn.textContent = "▶ FLOOD"; sbtn.disabled = false; } }
+}
+
+function leaveFlood() {
+  floodPageOpen = false;
+  if (floodTimer) { clearInterval(floodTimer); floodTimer = null; }
+}
+
+/* ================= Portal Kit ================= */
+
+let portalPageOpen = false;
+let portalTimer = null;
+
+function showPortal() {
+  state.terminal = false; state.settings = false; state.tool = null; state.section = null; state.running = false;
+  document.querySelector(".btn-back").style.display = "flex";
+  portalPageOpen = true;
+  const c = document.querySelector(".content");
+  c.innerHTML = "";
+  const page = el("div", "recon");
+  const head = el("div", "section-head");
+  head.appendChild(el("h2", null, "✪ PORTAL KIT"));
+  head.appendChild(el("div", "re-pine", "pit the right dream"));
+  page.appendChild(head);
+  const stats = el("div", "re-stats");
+  stats.id = "portal-stats";
+  page.appendChild(stats);
+  const ctr = el("div", "wardrive-ctr");
+  const tRow = el("div", "wdr-row");
+  tRow.appendChild(el("span", "wdr-lbl", "theme"));
+  const theme = el("select", "wdr-sel");
+  theme.id = "portal-theme";
+  tRow.appendChild(theme);
+  ctr.appendChild(tRow);
+  const iRow = el("div", "wdr-row");
+  iRow.appendChild(el("span", "wdr-lbl", "card"));
+  const sel = el("select", "wdr-sel");
+  sel.id = "portal-iface";
+  iRow.appendChild(sel);
+  ctr.appendChild(iRow);
+  const sRow = el("div", "wdr-row");
+  sRow.appendChild(el("span", "wdr-lbl", "ssid"));
+  const ss = el("input", "wdr-inp");
+  ss.id = "portal-ssid";
+  ss.value = "Free-WiFi";
+  ss.maxLength = 26;
+  sRow.appendChild(ss);
+  ctr.appendChild(sRow);
+  const cRow = el("div", "wdr-row");
+  cRow.appendChild(el("span", "wdr-lbl", "ch"));
+  const ch = el("input", "wdr-inp wdr-sm");
+  ch.id = "portal-ch";
+  ch.value = "6";
+  ch.inputMode = "numeric";
+  cRow.appendChild(ch);
+  cRow.appendChild(el("span", "wdr-lbl", "wpa2-psk"));
+  const ps = el("input", "wdr-inp");
+  ps.id = "portal-psk";
+  ps.placeholder = "leave empty for open";
+  cRow.appendChild(ps);
+  ctr.appendChild(cRow);
+  const bar = el("div", "re-bar");
+  const start = el("button", "big-btn run", "▶ SPIN UP");
+  start.id = "portal-start";
+  start.onclick = () => portalStart();
+  const stop = el("button", "big-btn stop", "■ TEAR DOWN");
+  stop.id = "portal-stop";
+  stop.onclick = async () => { try { await fetch("/api/portal/stop", { method: "POST" }); } catch (e) {} };
+  bar.append(start, stop);
+  ctr.appendChild(bar);
+  page.appendChild(ctr);
+  const crHead = el("div", "re-tabs");
+  crHead.appendChild(el("span", "ra-sub", "CAPTURED CREDS"));
+  page.appendChild(crHead);
+  const creds = el("div", "re-table");
+  creds.id = "portal-creds";
+  page.appendChild(creds);
+  c.appendChild(page);
+  const tick = async () => {
+    if (!portalPageOpen) return;
+    try { portalRender(await fetch("/api/portal/status").then(r => r.json())); } catch (e) {}
+  };
+  portalTimer = setInterval(tick, 2500);
+  tick();
+}
+
+function portalRender(st) {
+  const themeSel = document.getElementById("portal-theme");
+  if (themeSel && st.themes) {
+    const cur = themeSel.value || st.theme;
+    themeSel.innerHTML = "";
+    st.themes.forEach(t => {
+      const o = el("option", null, t);
+      o.value = t;
+      themeSel.appendChild(o);
+    });
+    themeSel.value = cur;
+  }
+  const sel = document.getElementById("portal-iface");
+  if (sel && st.ifaces) {
+    const cur = sel.value;
+    sel.innerHTML = "";
+    const opts = [["", "auto"], ...(st.ifaces || []).map(i => [i, i])];
+    opts.forEach(([v, lab]) => { const o = el("option", null, lab); o.value = v; sel.appendChild(o); });
+    sel.value = cur || "";
+  }
+  const stBox = document.getElementById("portal-stats");
+  if (stBox) {
+    stBox.innerHTML = "";
+    [
+      ["AP", st.running ? "▶ live" : "down", st.running ? "ok" : "idle"],
+      ["theme", st.theme || "—", ""],
+      ["clone", st.clone_present ? "ready" : "none", st.clone_present ? "ok" : "idle"],
+      ["ssid", st.ssid || "—", ""],
+      ["clients", st.clients ? st.clients.length : 0, ""],
+      ["creds", st.creds ? st.creds.length : 0, ""],
+    ].forEach(([k, v, cls]) => {
+      const cell = el("div", "re-stat");
+      cell.append(el("span", "re-stat-lab", k), el("span", "re-stat-val" + (cls ? " " + cls : ""), v));
+      stBox.appendChild(cell);
+    });
+  }
+  const sbtn = document.getElementById("portal-start");
+  if (sbtn) sbtn.disabled = st.running;
+  const creds = document.getElementById("portal-creds");
+  if (creds) {
+    creds.innerHTML = "";
+    const rows = st.creds || [];
+    if (!rows.length) creds.appendChild(el("div", "re-empty", "no credentials captured yet."));
+    rows.forEach(rc => {
+      const r = el("div", "ra-row");
+      const m = el("div", "ra-main");
+      m.appendChild(el("span", "ra-sig", "◎"));
+      const mid = el("div", "tb-mid");
+      mid.appendChild(el("div", null, rc.user + " / " + rc.pw));
+      mid.appendChild(el("div", "sub", rc.time + "  from " + rc.ip + "  (" + rc.ssid + ")"));
+      m.appendChild(mid);
+      r.appendChild(m);
+      creds.appendChild(r);
+    });
+  }
+}
+
+async function portalStart() {
+  const theme = document.getElementById("portal-theme").value;
+  const iface = document.getElementById("portal-iface").value;
+  const ssid = document.getElementById("portal-ssid").value || "Free-WiFi";
+  const ch = document.getElementById("portal-ch").value || "6";
+  const psk = document.getElementById("portal-psk").value || "";
+  const sbtn = document.getElementById("portal-start");
+  if (sbtn) { sbtn.disabled = true; sbtn.textContent = "spinning up…"; }
+  try {
+    const r = await fetch("/api/portal/start", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ theme, iface, ssid, channel: ch, psk: psk || null }),
+    }).then(r => r.json());
+    if (sbtn) {
+      sbtn.textContent = r.ok ? "▶ SPIN UP" : "failed: " + (r.msg || "?");
+      setTimeout(() => { if (sbtn) sbtn.textContent = "▶ SPIN UP"; }, 3500);
+    }
+  } catch (e) { if (sbtn) { sbtn.textContent = "▶ SPIN UP"; sbtn.disabled = false; } }
+}
+
+function leavePortal() {
+  portalPageOpen = false;
+  if (portalTimer) { clearInterval(portalTimer); portalTimer = null; }
+}
+
+/* ================= Login Clone ================= */
+
+let clonePageOpen = false;
+let cloneTimer = null;
+
+function showClone() {
+  state.terminal = false; state.settings = false; state.tool = null; state.section = null; state.running = false;
+  document.querySelector(".btn-back").style.display = "flex";
+  clonePageOpen = true;
+  const c = document.querySelector(".content");
+  c.innerHTML = "";
+  const page = el("div", "recon");
+  const head = el("div", "section-head");
+  head.appendChild(el("h2", null, "❒ LOGIN CLONE"));
+  head.appendChild(el("div", "re-pine", "serve a real login page from the rogue AP"));
+  page.appendChild(head);
+  const stats = el("div", "re-stats");
+  stats.id = "clone-stats";
+  page.appendChild(stats);
+  const ctr = el("div", "wardrive-ctr");
+  const uRow = el("div", "wdr-row");
+  uRow.appendChild(el("span", "wdr-lbl", "url"));
+  const url = el("input", "wdr-inp");
+  url.id = "clone-url";
+  url.value = "https://";
+  uRow.appendChild(url);
+  ctr.appendChild(uRow);
+  const bar = el("div", "re-bar");
+  const go = el("button", "big-btn run", "⤓ FETCH & REWRITE");
+  go.id = "clone-go";
+  go.onclick = () => cloneStart();
+  const clear = el("button", "big-btn stop", "✕ CLEAR");
+  clear.id = "clone-clear";
+  clear.onclick = async () => { try { await fetch("/api/clone/clear", { method: "POST" }); } catch (e) {} };
+  bar.append(go, clear);
+  ctr.appendChild(bar);
+  page.appendChild(ctr);
+  const nHead = el("div", "re-tabs");
+  nHead.appendChild(el("span", "ra-sub", "CLONE STATUS"));
+  page.appendChild(nHead);
+  const note = el("div", "re-console");
+  note.id = "clone-note";
+  page.appendChild(note);
+  c.appendChild(page);
+  const tick = async () => {
+    if (!clonePageOpen) return;
+    try { cloneRender(await fetch("/api/clone/status").then(r => r.json())); } catch (e) {}
+  };
+  cloneTimer = setInterval(tick, 2500);
+  tick();
+}
+
+function cloneRender(st) {
+  const stBox = document.getElementById("clone-stats");
+  if (stBox) {
+    stBox.innerHTML = "";
+    [
+      ["clone", st.present ? "ready" : "none", st.present ? "ok" : "idle"],
+      ["busy", st.busy ? "fetching…" : "idle", st.busy ? "warn" : ""],
+      ["portal", st.rogue_running ? "up" : "down", st.rogue_running ? "ok" : "idle"],
+    ].forEach(([k, v, cls]) => {
+      const cell = el("div", "re-stat");
+      cell.append(el("span", "re-stat-lab", k), el("span", "re-stat-val" + (cls ? " " + cls : ""), v));
+      stBox.appendChild(cell);
+    });
+  }
+  const note = document.getElementById("clone-note");
+  if (note) {
+    note.innerHTML = "";
+    const m = st.meta || {};
+    const lines = [];
+    lines.push(m.ok ? "clone ready — portal serves it for every host/path" : (st.present ? "clone ready" : "no clone yet"));
+    if (m.url) lines.push("source: " + m.url);
+    if (m.http) lines.push("HTTP " + m.http + " · " + m.size + " bytes · " + (m.forms || 0) + " form(s) rewritten");
+    if (m.time) lines.push("captured " + new Date(m.time * 1000).toLocaleTimeString());
+    if (m.error) lines.push("error: " + m.error);
+    lines.push(st.rogue_running ? "portal is up — victims see THIS page." : "start a Rogue AP / Portal Kit to serve it.");
+    lines.forEach(ln => note.appendChild(el("div", "lg-ln" + (ln.indexOf("error") >= 0 ? " err" : ""), ln)));
+  }
+  const go = document.getElementById("clone-go");
+  if (go) go.disabled = st.busy;
+}
+
+async function cloneStart() {
+  const url = document.getElementById("clone-url").value || "";
+  const go = document.getElementById("clone-go");
+  if (go) { go.disabled = true; go.textContent = "fetching…"; }
+  try {
+    const r = await fetch("/api/clone/start", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    }).then(r => r.json());
+    if (go) {
+      go.textContent = r.ok ? "⤓ FETCH & REWRITE" : "failed: " + (r.msg || "?");
+      setTimeout(() => { if (go) go.textContent = "⤓ FETCH & REWRITE"; }, 3000);
+    }
+  } catch (e) { if (go) { go.textContent = "⤓ FETCH & REWRITE"; go.disabled = false; } }
+}
+
+function leaveClone() {
+  clonePageOpen = false;
+  if (cloneTimer) { clearInterval(cloneTimer); cloneTimer = null; }
+}
+
+/* ================= Auto-Pentest ================= */
+
+let pentestPageOpen = false;
+let pentestTimer = null;
+
+function showPentest() {
+  state.terminal = false; state.settings = false; state.tool = null; state.section = null; state.running = false;
+  document.querySelector(".btn-back").style.display = "flex";
+  pentestPageOpen = true;
+  const c = document.querySelector(".content");
+  c.innerHTML = "";
+  const page = el("div", "recon");
+  const head = el("div", "section-head");
+  head.appendChild(el("h2", null, "⛧ AUTO-PENTEST"));
+  head.appendChild(el("div", "re-pine", "capture → deauth → crack → decrypt"));
+  page.appendChild(head);
+  const stats = el("div", "re-stats");
+  stats.id = "pentest-stats";
+  page.appendChild(stats);
+  const ctr = el("div", "wardrive-ctr");
+  const bRow = el("div", "wdr-row");
+  bRow.appendChild(el("span", "wdr-lbl", "bssid"));
+  const bb = el("input", "wdr-inp");
+  bb.id = "pentest-bssid";
+  bb.placeholder = "AA:BB:CC:DD:EE:FF";
+  bRow.appendChild(bb);
+  ctr.appendChild(bRow);
+  const eRow = el("div", "wdr-row");
+  eRow.appendChild(el("span", "wdr-lbl", "essid"));
+  const ee = el("input", "wdr-inp");
+  ee.id = "pentest-essid";
+  ee.placeholder = "network name (optional)";
+  eRow.appendChild(ee);
+  ctr.appendChild(eRow);
+  const cRow = el("div", "wdr-row");
+  cRow.appendChild(el("span", "wdr-lbl", "ch"));
+  const ch = el("input", "wdr-inp wdr-sm");
+  ch.id = "pentest-ch";
+  ch.value = "6";
+  ch.inputMode = "numeric";
+  cRow.appendChild(ch);
+  ctr.appendChild(cRow);
+  const bar = el("div", "re-bar");
+  const start = el("button", "big-btn run", "▶ GO");
+  start.id = "pentest-start";
+  start.onclick = () => pentestStart();
+  const stop = el("button", "big-btn stop", "■ ABORT");
+  stop.id = "pentest-stop";
+  stop.onclick = async () => { try { await fetch("/api/apent/stop", { method: "POST" }); } catch (e) {} };
+  bar.append(start, stop);
+  ctr.appendChild(bar);
+  page.appendChild(ctr);
+  const lHead = el("div", "re-tabs");
+  lHead.appendChild(el("span", "ra-sub", "MISSION LOG"));
+  page.appendChild(lHead);
+  const log = el("div", "re-console");
+  log.id = "pentest-log";
+  page.appendChild(log);
+  c.appendChild(page);
+  const tick = async () => {
+    if (!pentestPageOpen) return;
+    try { pentestRender(await fetch("/api/apent/status").then(r => r.json())); } catch (e) {}
+  };
+  pentestTimer = setInterval(tick, 2500);
+  tick();
+}
+
+function pentestRender(st) {
+  const stBox = document.getElementById("pentest-stats");
+  if (stBox) {
+    stBox.innerHTML = "";
+    const phaseCol = st.running ? "ok" : (st.phase === "cracked" ? "ok" : "idle");
+    [
+      ["phase", st.phase || "idle", phaseCol],
+      ["iface", st.iface || "—", ""],
+      ["target", st.bssid || "—", ""],
+      ["chan", st.channel != null ? st.channel : "—", ""],
+      ["runtime", st.runtime ? st.runtime + "s" : "—", ""],
+    ].forEach(([k, v, cls]) => {
+      const cell = el("div", "re-stat");
+      cell.append(el("span", "re-stat-lab", k), el("span", "re-stat-val" + (cls ? " " + cls : ""), v));
+      stBox.appendChild(cell);
+    });
+    if (st.handshake) {
+      const hs = el("div", "re-stat");
+      hs.appendChild(el("span", "re-stat-lab", "handshake"));
+      hs.appendChild(el("span", "re-stat-val ok", "GOT IT"));
+      stBox.appendChild(hs);
+    }
+    if (st.key) {
+      const kw = el("div", "re-stat");
+      kw.appendChild(el("span", "re-stat-lab", "KEY"));
+      kw.appendChild(el("span", "re-stat-val ok", st.key));
+      stBox.appendChild(kw);
+    }
+    if (st.decrypted != null) {
+      const dd = el("div", "re-stat");
+      dd.appendChild(el("span", "re-stat-lab", "decrypted"));
+      dd.appendChild(el("span", "re-stat-val" + (st.decrypted ? " ok" : ""), st.decrypted + " pkt"));
+      stBox.appendChild(dd);
+    }
+  }
+  const sbtn = document.getElementById("pentest-start");
+  if (sbtn) sbtn.disabled = st.running;
+  const log = document.getElementById("pentest-log");
+  if (log) {
+    log.innerHTML = "";
+    const rows = st.log || [];
+    if (!rows.length) log.appendChild(el("div", "lg-ln idle", "no mission yet."));
+    rows.forEach(e2 => {
+      const t = new Date(e2.t * 1000).toLocaleTimeString();
+      log.appendChild(el("div", "lg-ln" + (e2.m.indexOf("KEY FOUND") >= 0 ? " ok" : ""), t + "  " + e2.m));
+    });
+    log.scrollTop = log.scrollHeight;
+  }
+}
+
+async function pentestStart() {
+  const bssid = document.getElementById("pentest-bssid").value;
+  const essid = document.getElementById("pentest-essid").value;
+  const ch = document.getElementById("pentest-ch").value;
+  const sbtn = document.getElementById("pentest-start");
+  if (sbtn) { sbtn.disabled = true; sbtn.textContent = "arming…"; }
+  try {
+    const r = await fetch("/api/apent/start", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bssid, essid, channel: ch }),
+    }).then(r => r.json());
+    if (sbtn) {
+      sbtn.textContent = r.ok ? "▶ GO" : "failed: " + (r.msg || "?");
+      setTimeout(() => { if (sbtn) sbtn.textContent = "▶ GO"; }, 3500);
+    }
+  } catch (e) { if (sbtn) { sbtn.textContent = "▶ GO"; sbtn.disabled = false; } }
+}
+
+function leavePentest() {
+  pentestPageOpen = false;
+  if (pentestTimer) { clearInterval(pentestTimer); pentestTimer = null; }
 }
 
 /* ================= boot splash ================= */

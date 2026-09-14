@@ -13,8 +13,10 @@ both with live progress bars.
 Custom-built tools round it out: **Wardrive** (phone-GPS wardriving via a QR
 page → WiGLE CSV), **Recon/PineAP**, **Handshake Hunter** (auto-cracks the handshake
 as soon as it's captured), **WiFi Radar**, **Rogue AP** (evil-twin AP with a captive
-portal that captures login credentials), plus a tap-to-toggle **route via Tor**
-(proxychains) on any network tool.
+portal that captures login credentials), **Probe Tracker**, **Deauth Blaster**,
+**Beacon Flood**, **Portal Kit** (phishing themes), **Login Clone**, and a
+one-press **Auto-Pentest** (capture → crack → decrypt) — plus a tap-to-toggle
+**route via Tor** (proxychains) on any network tool.
 
 ```
 ┌───────────────────────────────────────┐
@@ -111,7 +113,9 @@ kali-touch-ui/
 │   ├── gps_page.py          # (vendored) phone QR page that streams GPS fixes
 │   ├── gps_server.py        # standalone HTTPS phone-GPS feed (TUI-compatible)
 │   └── headless.py          # drive runner: scan loop + QR page + JSON status
-├── rogue/portal.py          # captive-portal HTTP site for the rogue AP (:80)
+├── rogue/
+│   ├── portal.py          # captive-portal HTTP site for the rogue AP (:80, 4 themes + clone)
+│   └── beaconflood.py     # raw-frame beacon flooder (AF_PACKET, radiotap injection)
 ├── web/
 │   ├── index.html
 │   └── assets/
@@ -140,7 +144,8 @@ kali-touch-ui/
 
 ### Built-in custom tools
 
-The Home screen surfaces three hand-built tools for the field kit:
+The Home screen surfaces custom hand-built tools for the field kit (`Custom Tools` →
+9 apps):
 
 - **◈ Wardrive** — one tap starts a Wi-Fi/BLE scan that autosaves a WiGLE CSV
   (`~/.wardriver/scans/wardriving_YYYYMMDD_HHMMSS.csv` with lat/lon/accuracy).
@@ -157,6 +162,31 @@ The Home screen surfaces three hand-built tools for the field kit:
   handshake is detected, the backend auto-converts it (`hcxpcapngtool`) and runs
   `aircrack-ng` against `rockyou.txt`; a found key lands in
   `/tmp/hs/pots/*.aircrack` and the UI flips to **KEY FOUND**.
+- **◉ Probe Tracker** — monitors clients probing for networks and ranks the SSIDs
+  they're hunting (`/tmp/probe/probes.json`). Its top names feed the **Beacon Flood**
+  (tick "borrow probed names").
+- **⚡ Deauth Blaster** — `aireplay-ng -0 0` in one tap: targeted at a BSSID+
+  client, or flood-blast every station in range ("EVERYONE" mode). **SCAN** does a
+  7-second flash capture and lists nearby APs to tap-fill the target.
+- **◐ Beacon Flood** — raw-frame beacon flooder (`rogue/beaconflood.py`) spraying
+  fake SSIDs across channels (1/6/11) with `--hidden` support; fake BSSIDs are derived
+  from the SSID so the same name always shows the same MAC — clients that probe for a
+  spoofed name will find *us*.
+- **✪ Portal Kit** — the Rogue AP with switchable captive-portal themes
+  (`/tmp/rogue/theme.json`): freewifi, iphone-hotspot, firmware (router-update
+  phish), airport. Theme pages are served on :80; network checks
+  (`/generate_204`, captive.apple.com, …) are answered automatically.
+- **❒ Login Clone** — fetches any HTTPS page, rewrites its form fields to POST
+  into `/login`, and serves the clone from the rogue AP on *every* host/path —
+  the portal becomes a mirror of the real login.
+- **⛧ Auto-Pentest** — one-press chain on a target BSSID: monitor → capture →
+  periodic deauth pokes → handshake detect (`hcxpcapngtool`) → crack (`hashcat`
+  `-m 22000`, falling back to `aircrack-ng` against `rockyou.txt`) → `airdecap-ng`
+  to decrypt the session. Key + decrypted-packet count land in `/tmp/apent/pots/`.
+
+Only one tool owns the attack NIC at a time — starting any of them tears down the
+previous one (including a running Rogue AP), and the NIC is returned to managed mode
+on stop.
 
 Choose any runnable tool ([**Custom tools** fields](#adding-your-own-tools) apply)
 and **Tor** will wrap it in `proxychains` (and start `tor` via systemd) so traffic

