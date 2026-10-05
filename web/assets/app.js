@@ -1302,36 +1302,78 @@ function renderReconArrivals() {
   feed.classList.toggle("arrival-pulse", !!reconArrivals[0] && Date.now() - reconArrivals[0].time < 4000);
 }
 
+const WATERFALL_CHANNELS = {
+  "2.4": Array.from({length:14},(_,i)=>i+1),
+  "5": [36,40,44,48,52,56,60,64,100,104,108,112,116,120,124,128,132,136,140,144,149,153,157,161,165,169,173,177]
+};
+const WATERFALL_PALETTE = [[9,13,36],[39,24,104],[36,76,190],[0,190,220],[74,235,164],[255,217,82],[255,112,53]];
+function waterfallColor(power, alpha=1) {
+  const position=Math.max(0,Math.min(1,(power+100)/70))*(WATERFALL_PALETTE.length-1);
+  const i=Math.min(WATERFALL_PALETTE.length-2,Math.floor(position)),mix=position-i;
+  const rgb=WATERFALL_PALETTE[i].map((v,k)=>Math.round(v+(WATERFALL_PALETTE[i+1][k]-v)*mix));
+  return `rgba(${rgb.join(",")},${alpha})`;
+}
+
 function renderReconWaterfall() {
-  const cv = document.getElementById("re-graph"); if (!cv) return;
-  const w = cv.clientWidth || 450, h = cv.clientHeight || 280, dpr = Math.min(devicePixelRatio || 1,2);
+  const cv=document.getElementById("re-graph");if(!cv)return;
+  const w=cv.clientWidth||450,h=cv.clientHeight||320,dpr=Math.min(devicePixelRatio||1,2);
   if(cv.width!==Math.round(w*dpr))cv.width=Math.round(w*dpr);
   if(cv.height!==Math.round(h*dpr))cv.height=Math.round(h*dpr);
-  const ctx = cv.getContext("2d"); ctx.setTransform(dpr,0,0,dpr,0,0);
-  ctx.fillStyle="#071512";ctx.fillRect(0,0,w,h);
+  const ctx=cv.getContext("2d");ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.fillStyle="#050913";ctx.fillRect(0,0,w,h);
   const bands=reconWaterfallBand==="both" ? ["2.4","5"] : [reconWaterfallBand];
-  const now=reconLast.st.running ? Date.now() : (reconWaterfall[0]?.time || Date.now());
+  const now=reconLast.st.running ? Date.now() : (reconWaterfall[0]?.time||Date.now());
+  const footer=30,panelHeight=(h-footer)/bands.length;
   bands.forEach((band,index)=>{
-    const L=34,R=10,T=index*h/bands.length+25,B=23,pw=w-L-R,ph=h/bands.length-25-B;
-    const channels=band==="2.4" ? Array.from({length:14},(_,i)=>i+1) : [36,40,44,48,52,56,60,64,100,104,108,112,116,120,124,128,132,136,140,144,149,153,157,161,165,169,173,177];
+    const L=35,R=12,top=index*panelHeight,T=top+42,pw=w-L-R,ph=panelHeight-64;
+    const channels=WATERFALL_CHANNELS[band],cw=pw/channels.length;
+    ctx.fillStyle="#a6bad5";ctx.font="bold 12px sans-serif";ctx.textAlign="left";
+    ctx.fillText(band+" GHz",L,top+17);
+    ctx.font="10px sans-serif";ctx.fillStyle=reconLast.st.running ? "#57edc1" : "#8393ad";
+    ctx.textAlign="right";ctx.fillText(reconLast.st.running ? "● LIVE" : "○ PAUSED",w-R,top+17);
+    const background=ctx.createLinearGradient(0,T,0,T+ph);
+    background.addColorStop(0,"#101b38");background.addColorStop(1,"#080e20");
+    ctx.fillStyle=background;ctx.fillRect(L,T,pw,ph);
     ctx.save();ctx.beginPath();ctx.rect(L,T,pw,ph);ctx.clip();
-    for(const row of reconWaterfall) {
-      const age=now-row.time;if(age>60000 || age<0)continue;
-      const y=T+age/60000*ph;
+    let observed=false;
+    for(let r=0;r<reconWaterfall.length;r++) {
+      const row=reconWaterfall[r],age=now-row.time;if(age>60000 || age<0)continue;
+      // Paint only the measured sampling interval; outages remain empty.
+      const older=reconWaterfall[r+1];
+      const duration=Math.min(1500,Math.max(250,older ? row.time-older.time : 1000));
+      const y=T+age/60000*ph,rh=Math.max(1,duration/60000*ph);
       channels.forEach((ch,i)=>{
-        const strength=row.cells[band+":"+ch];if(strength===undefined)return;
-        const level=Math.max(0,Math.min(1,(strength+100)/70));
-        ctx.fillStyle=`hsl(${190-level*150} 90% ${20+level*40}%)`;
-        ctx.fillRect(L+i*pw/channels.length,y,pw/channels.length-1,Math.max(2,ph/60));
+        const power=row.cells[band+":"+ch];if(power===undefined)return;
+        observed=true;
+        ctx.fillStyle=waterfallColor(power);ctx.fillRect(L+i*cw,y,cw,rh);
+        // A faint cell boundary keeps channel bins readable without invented RF spread.
+        ctx.fillStyle="#05091333";ctx.fillRect(L+i*cw,y,Math.min(1,cw/8),rh);
       });
     }
-    ctx.restore();ctx.font="10px sans-serif";ctx.fillStyle="#b8d6ca";ctx.textAlign="left";
-    ctx.fillText(band+" GHz · "+(reconLast.st.running ? "LIVE" : "STOPPED"),L,T-10);
-    ctx.fillText("now",0,T+8);ctx.fillText("−60s",0,T+ph);
-    ctx.textAlign="center";
-    channels.forEach((ch,i)=>{if(channels.length<=14 ? i%2===0 : i%4===0)ctx.fillText(String(ch),L+(i+.5)*pw/channels.length,T+ph+15);});
-    if(!reconWaterfall.some(row=>now-row.time<=60000 && row.aps.some(ap=>ap.band===band)))ctx.fillText("Waiting for "+band+" GHz observations",L+pw/2,T+ph/2);
+    ctx.strokeStyle="#b1ccff12";ctx.lineWidth=1;
+    for(const age of [0,15,30,45,60]) {const y=T+age/60*ph;ctx.beginPath();ctx.moveTo(L,y);ctx.lineTo(w-R,y);ctx.stroke();}
+    ctx.restore();
+    const latest=reconWaterfall[0];
+    channels.forEach((ch,i)=>{
+      const power=latest && now-latest.time<2000 ? latest.cells[band+":"+ch] : undefined;
+      ctx.fillStyle="#111b30";ctx.fillRect(L+i*cw,top+27,cw-1,9);
+      if(power!==undefined) {ctx.fillStyle=waterfallColor(power);ctx.fillRect(L+i*cw,top+27,cw-1,9);}
+    });
+    const beam=ctx.createLinearGradient(L,T,w-R,T);beam.addColorStop(0,"#36d8f022");beam.addColorStop(.5,"#74eaffaa");beam.addColorStop(1,"#36d8f022");
+    ctx.fillStyle=beam;ctx.fillRect(L,T,pw,1);
+    ctx.font="9px sans-serif";ctx.textAlign="right";ctx.fillStyle="#7186a4";
+    for(const [age,label] of [[0,"NOW"],[30,"−30"],[60,"−60s"]])ctx.fillText(label,L-5,T+Math.min(ph-2,age/60*ph+5));
+    ctx.textAlign="center";ctx.fillStyle="#9eb3cf";
+    channels.forEach((ch,i)=>{if(channels.length<=14 ? i%2===0 || i===13 : i%4===0 || i===27)ctx.fillText(String(ch),L+(i+.5)*cw,T+ph+14);});
+    if(!observed) {ctx.fillStyle="#8393ad";ctx.font="11px sans-serif";ctx.fillText("Waiting for "+band+" GHz observations",L+pw/2,T+ph/2);}
   });
+  const x=35,y=h-16,sw=w-47;
+  const scale=ctx.createLinearGradient(x,0,x+sw,0);
+  WATERFALL_PALETTE.forEach((rgb,i)=>scale.addColorStop(i/(WATERFALL_PALETTE.length-1),`rgb(${rgb.join(",")})`));
+  ctx.fillStyle=scale;ctx.fillRect(x,y,sw,4);
+  ctx.font="9px sans-serif";ctx.fillStyle="#8ca3bf";ctx.textAlign="left";ctx.fillText("−100 dBm",x,y+13);
+  ctx.textAlign="center";ctx.fillText("SIGNAL STRENGTH",x+sw/2,y+13);
+  ctx.textAlign="right";ctx.fillText("−30 dBm",x+sw,y+13);
   cv.setAttribute("aria-label","WiFi signal waterfall, "+(reconWaterfallBand==="both" ? "2.4 and 5" : reconWaterfallBand)+" GHz, last 60 seconds, newest observations at top; brighter means stronger signal.");
 }
 
@@ -1354,7 +1396,7 @@ function reconSample() {
 function renderReconGraph() {
   document.querySelectorAll('[data-graph-view]').forEach(b => b.classList.toggle('on', b.dataset.graphView === reconGraphView));
   document.querySelectorAll("[data-graph-band]").forEach(b => { b.hidden = b.dataset.graphBand === "both" && reconGraphView !== "waterfall"; b.classList.toggle("on", reconGraphView !== "history" && b.dataset.graphBand === (reconGraphView === "waterfall" ? reconWaterfallBand : reconGraphBand)); });
-  const graph=document.getElementById("re-graph");if(graph)graph.style.height=reconGraphView==="waterfall" ? "280px" : "190px";
+  const graph=document.getElementById("re-graph");if(graph)graph.style.height=reconGraphView==="waterfall" ? (innerHeight>600 ? "360px" : "300px") : "190px";
   if (reconGraphView === "waterfall") { renderReconWaterfall(); return; }
   if (reconGraphView === "history") { renderReconHistory(); return; }
   const cv = document.getElementById("re-graph"); if (!cv) return;
@@ -1438,7 +1480,7 @@ function renderReconHistory() {
 function renderReconLegend() {
   const leg = document.getElementById("re-legend"); if (!leg) return;
   leg.replaceChildren();
-  if (reconGraphView === "waterfall") { leg.append(el("div", "ra-sub", "Newest at top · blue = weaker, yellow = stronger · observed WiFi signal, not channel utilization")); return; }
+  if (reconGraphView === "waterfall") { leg.append(el("div", "ra-sub", "Channel × time · newest at top · observed WiFi signal")); return; }
   const reset = el("button", "re-chart-reset", reconOpen ? "Show all networks" : reconGraphView === "history" ? "Strongest 3 · tap a network to isolate" : "Live networks · channel and signal · tap to select");
   reset.onclick = () => reconSelect(null); leg.append(reset);
   const networks = reconGraphView === "history" ? reconChartNetworks() : reconLast.d.aps.filter(reconMatch).filter(ap => scanBand(ap) === reconGraphBand).sort((a,b)=>Number(b.power)-Number(a.power));

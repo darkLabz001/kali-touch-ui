@@ -51,7 +51,19 @@ with sync_playwright() as p:
         assert page.evaluate('reconGraphView')=='waterfall'
         page.get_by_role('button',name='Both bands',exact=True).tap()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        page.evaluate("""() => {
+            const now=Date.now();
+            reconWaterfall=Array.from({length:60},(_,i)=>{
+                const cells={};
+                for(const [band,channel,base] of [['2.4',1,-82],['2.4',6,-48],['2.4',11,-62],['5',36,-55],['5',44,-72],['5',100,-85],['5',149,-43],['5',157,-67]]) {
+                    if(i>=23 && i<=28)continue;
+                    cells[band+':'+channel]=base+Math.sin(i/5+channel)*8;
+                }
+                return {time:now-i*1000,cells,aps:Object.keys(cells).map(key=>({band:key.split(':')[0]}))};
+            });renderReconWaterfall();
+        }""")
         page.screenshot(path=f'/tmp/recon-waterfall-{width}x{height}.png',full_page=True)
+        assert page.evaluate("waterfallColor(-30)!==waterfallColor(-100)")
         page.locator('.re-arrival').filter(has_text='<New WiFi>').tap()
         expect(page.locator('#re-target')).to_contain_text('<New WiFi>')
         page.evaluate('''() => {
