@@ -982,7 +982,7 @@ class ReconManager:
                 pass
         self.proc = subprocess.Popen(
             ["sudo", "-n", "airodump-ng", "--background", "1", "--update", "2", "--band", "abg", "--write", RECON_DIR,
-             "--write-interval", "2", "--output-format", "csv", iface],
+             "--write-interval", "1", "--output-format", "csv", iface],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         threading.Thread(target=bounded_scan_log, args=(self.proc.stdout, RECON_DIR + "/scan.log"), daemon=True).start()
         self.iface = iface
@@ -999,6 +999,12 @@ class ReconManager:
                 except OSError:
                     pass
             self.proc = None
+
+    def snapshot(self):
+        data = self.data()
+        return {"st": {"running": self.running(), "iface": self.iface,
+                       "aps": len(data["aps"]), "clients": len(data["clients"])},
+                "d": data, "lg": {"log": self.log_tail()}}
 
     def state(self):
         aps = clients = 0
@@ -2873,6 +2879,8 @@ class Handler(BaseHTTPRequestHandler):
                 {"running": not TERM.exited and TERM.pid is not None,
                  "pid": TERM.pid}
             ).encode())
+        elif path == "/api/recon/snapshot":
+            self._send(200, json.dumps(RECON.snapshot()).encode())
         elif path == "/api/recon/state":
             self._send(200, json.dumps(RECON.state()).encode())
         elif path == "/api/recon/data":

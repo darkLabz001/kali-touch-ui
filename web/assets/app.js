@@ -1233,6 +1233,8 @@ let reconSeen = new Set();
 let reconArrivals = [];
 let reconArrivalBaseline = false;
 let reconWasRunning = false;
+let reconWaterfallBand = "both";
+let reconAnimation = null;
 const RECON_COLORS = ["#39ff14", "#00d9ff", "#ffb000", "#ff3bd3", "#ffe000", "#4cf0c0"];
 
 const reconColors = new Map();
@@ -1273,13 +1275,19 @@ function reconObserve(now = Date.now()) {
     const seen = Date.parse((ap.last || "").replace(" ", "T"));
     return Number.isFinite(seen) && now - seen <= 15000 && now - seen >= -5000 && reconSignal(ap) !== null;
   }).map(ap => ({channel: Number(ap.channel), power: reconSignal(ap), band: scanBand(ap)}));
-  reconWaterfall.unshift({time: now, aps});
-  reconWaterfall = reconWaterfall.filter(row => now - row.time <= 180000).slice(0,60);
+  const cells = {};
+  for (const ap of aps) { const key=ap.band+":"+ap.channel; cells[key]=Math.max(cells[key] ?? -110,ap.power); }
+  reconWaterfall.unshift({time: now, aps, cells});
+  reconWaterfall = reconWaterfall.filter(row => now - row.time <= 180000).slice(0,180);
   renderReconArrivals();
 }
 
 function renderReconArrivals() {
   const feed = document.getElementById("re-arrival-feed"); if (!feed) return;
+  feed.classList.toggle("arrival-pulse", !!reconArrivals[0] && Date.now() - reconArrivals[0].time < 4000);
+  const signature=reconArrivals.slice(0,8).map(e=>e.key+":"+e.time).join("|");
+  if(feed.dataset.signature===signature)return;
+  feed.dataset.signature=signature;
   feed.replaceChildren();
   for (const event of reconArrivals.slice(0,8)) {
     const b = el("button", "re-arrival");
@@ -1296,31 +1304,35 @@ function renderReconArrivals() {
 
 function renderReconWaterfall() {
   const cv = document.getElementById("re-graph"); if (!cv) return;
-  const w = cv.clientWidth || 450, h = cv.clientHeight || 190, dpr = Math.min(devicePixelRatio || 1,2);
-  cv.width = Math.round(w*dpr); cv.height = Math.round(h*dpr);
+  const w = cv.clientWidth || 450, h = cv.clientHeight || 280, dpr = Math.min(devicePixelRatio || 1,2);
+  if(cv.width!==Math.round(w*dpr))cv.width=Math.round(w*dpr);
+  if(cv.height!==Math.round(h*dpr))cv.height=Math.round(h*dpr);
   const ctx = cv.getContext("2d"); ctx.setTransform(dpr,0,0,dpr,0,0);
-  ctx.fillStyle = "#071512"; ctx.fillRect(0,0,w,h);
-  const L=42,R=12,T=28,B=26,pw=w-L-R,ph=h-T-B;
-  const channels = reconGraphBand === "2.4" ? Array.from({length:14},(_,i)=>i+1) : [36,40,44,48,52,56,60,64,100,104,108,112,116,120,124,128,132,136,140,144,149,153,157,161,165,169,173,177];
-  const now = Date.now();
-  for (const row of reconWaterfall) {
-    const y=T+(now-row.time)/180000*ph;
-    for (let i=0;i<channels.length;i++) {
-      const signals=row.aps.filter(ap=>ap.band===reconGraphBand && ap.channel===channels[i]);
-      if (!signals.length) continue;
-      const strength=Math.max(...signals.map(ap=>ap.power));
-      const level=Math.max(0,Math.min(1,(strength+100)/70));
-      ctx.fillStyle=`hsl(${190-level*150} 90% ${20+level*40}%)`;
-      ctx.fillRect(L+i*pw/channels.length,y,pw/channels.length-1,Math.max(2,ph/60));
+  ctx.fillStyle="#071512";ctx.fillRect(0,0,w,h);
+  const bands=reconWaterfallBand==="both" ? ["2.4","5"] : [reconWaterfallBand];
+  const now=reconLast.st.running ? Date.now() : (reconWaterfall[0]?.time || Date.now());
+  bands.forEach((band,index)=>{
+    const L=34,R=10,T=index*h/bands.length+25,B=23,pw=w-L-R,ph=h/bands.length-25-B;
+    const channels=band==="2.4" ? Array.from({length:14},(_,i)=>i+1) : [36,40,44,48,52,56,60,64,100,104,108,112,116,120,124,128,132,136,140,144,149,153,157,161,165,169,173,177];
+    ctx.save();ctx.beginPath();ctx.rect(L,T,pw,ph);ctx.clip();
+    for(const row of reconWaterfall) {
+      const age=now-row.time;if(age>60000 || age<0)continue;
+      const y=T+age/60000*ph;
+      channels.forEach((ch,i)=>{
+        const strength=row.cells[band+":"+ch];if(strength===undefined)return;
+        const level=Math.max(0,Math.min(1,(strength+100)/70));
+        ctx.fillStyle=`hsl(${190-level*150} 90% ${20+level*40}%)`;
+        ctx.fillRect(L+i*pw/channels.length,y,pw/channels.length-1,Math.max(2,ph/60));
+      });
     }
-  }
-  ctx.font="10px sans-serif";ctx.fillStyle="#b8d6ca";ctx.textAlign="left";
-  ctx.fillText((reconLast.st.running ? "LIVE" : "STOPPED")+" · WiFi signal · "+reconGraphBand+" GHz",L,15);
-  ctx.fillText("now",0,T+9);ctx.fillText("−3m",0,T+ph);
-  ctx.textAlign="center";
-  channels.forEach((ch,i)=>{if(channels.length<=14 ? i%2===0 : i%4===0)ctx.fillText(String(ch),L+(i+.5)*pw/channels.length,h-9);});
-  if (!reconWaterfall.some(row=>row.aps.some(ap=>ap.band===reconGraphBand))) {ctx.fillText("Waiting for fresh channel observations",L+pw/2,T+ph/2);}
-  cv.setAttribute("aria-label", "WiFi signal waterfall, "+reconGraphBand+" GHz, newest observations at top; brighter means stronger signal. Not spectrum energy or channel utilization.");
+    ctx.restore();ctx.font="10px sans-serif";ctx.fillStyle="#b8d6ca";ctx.textAlign="left";
+    ctx.fillText(band+" GHz · "+(reconLast.st.running ? "LIVE" : "STOPPED"),L,T-10);
+    ctx.fillText("now",0,T+8);ctx.fillText("−60s",0,T+ph);
+    ctx.textAlign="center";
+    channels.forEach((ch,i)=>{if(channels.length<=14 ? i%2===0 : i%4===0)ctx.fillText(String(ch),L+(i+.5)*pw/channels.length,T+ph+15);});
+    if(!reconWaterfall.some(row=>now-row.time<=60000 && row.aps.some(ap=>ap.band===band)))ctx.fillText("Waiting for "+band+" GHz observations",L+pw/2,T+ph/2);
+  });
+  cv.setAttribute("aria-label","WiFi signal waterfall, "+(reconWaterfallBand==="both" ? "2.4 and 5" : reconWaterfallBand)+" GHz, last 60 seconds, newest observations at top; brighter means stronger signal.");
 }
 
 function reconSample() {
@@ -1341,7 +1353,8 @@ function reconSample() {
 
 function renderReconGraph() {
   document.querySelectorAll('[data-graph-view]').forEach(b => b.classList.toggle('on', b.dataset.graphView === reconGraphView));
-  document.querySelectorAll("[data-graph-band]").forEach(b => b.classList.toggle("on", reconGraphView !== "history" && b.dataset.graphBand === reconGraphBand));
+  document.querySelectorAll("[data-graph-band]").forEach(b => { b.hidden = b.dataset.graphBand === "both" && reconGraphView !== "waterfall"; b.classList.toggle("on", reconGraphView !== "history" && b.dataset.graphBand === (reconGraphView === "waterfall" ? reconWaterfallBand : reconGraphBand)); });
+  const graph=document.getElementById("re-graph");if(graph)graph.style.height=reconGraphView==="waterfall" ? "280px" : "190px";
   if (reconGraphView === "waterfall") { renderReconWaterfall(); return; }
   if (reconGraphView === "history") { renderReconHistory(); return; }
   const cv = document.getElementById("re-graph"); if (!cv) return;
@@ -1449,6 +1462,7 @@ function renderReconChstrip() {
 }
 
 function leaveRecon() {
+  if (reconAnimation) { clearInterval(reconAnimation); reconAnimation = null; }
   if (reconTimer) { clearInterval(reconTimer); reconTimer = null; }
   reconPageOpen = false;
   reconOpen = null;
@@ -1726,9 +1740,9 @@ function showRecon() {
     const b=el("button","chip",label);b.dataset.graphView=view;
     b.onclick=()=>{reconGraphView=view;renderReconGraph();renderReconLegend();};graphControls.append(b);
   }
-  for(const band of ["2.4","5"]) {
-    const b=el("button","chip",band+" GHz"); b.dataset.graphBand=band;
-    b.onclick=()=>{reconGraphBand=band;if(reconGraphView!=="waterfall")reconGraphView="channels";renderReconGraph();renderReconLegend();};graphControls.append(b);
+  for(const band of ["both","2.4","5"]) {
+    const b=el("button","chip",band==="both" ? "Both bands" : band+" GHz"); b.dataset.graphBand=band;
+    b.onclick=()=>{if(reconGraphView==="waterfall")reconWaterfallBand=band;else {reconGraphBand=band;reconGraphView="channels";}renderReconGraph();renderReconLegend();};graphControls.append(b);
   }
   gwrap.append(graphControls);
   const gcanvas = document.createElement("canvas");
@@ -1813,23 +1827,22 @@ function showRecon() {
   reconDo(reconLast.st, reconLast.d, reconLast.lg);
   renderReconArrivals();
 
-  let polling = false;
+  let polling = false, lastTableRender = 0;
   const poke = async () => {
     if (!reconPageOpen || polling) return;
     polling = true;
     try {
-      const [st, d, lg] = await Promise.all([
-        fetch("/api/recon/state").then(r => r.json()),
-        fetch("/api/recon/data").then(r => r.json()),
-        fetch("/api/recon/log").then(r => r.json()),
-      ]);
+      const response = await fetch("/api/recon/snapshot", {signal: AbortSignal.timeout(4000)});
+      if (!response.ok) throw new Error("Scanner unavailable");
+      const {st,d,lg} = await response.json();
       if (!reconPageOpen) return;
       reconLast = { st, d, lg };
-      reconDo(st, d, lg, false);
+      if(Date.now()-lastTableRender>=2000) { reconDo(st, d, lg, false); lastTableRender=Date.now(); }
       reconSample();
     } catch (e) {} finally { polling = false; }
   };
-  reconTimer = setInterval(poke, 3000);
+  reconTimer = setInterval(poke, 1000);
+  reconAnimation = setInterval(()=>{if(reconPageOpen && reconGraphView==="waterfall" && reconLast.st.running && !document.hidden)renderReconWaterfall();},100);
   poke();
 }
 

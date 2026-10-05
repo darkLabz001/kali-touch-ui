@@ -24,6 +24,7 @@ def main():
                     elif path == 'api/recon/data': result = data
                     elif path == 'api/recon/state': result = {'running': True, 'iface': 'wlan1mon'}
                     elif path == 'api/recon/log': result = {'log': ''}
+                    elif path == 'api/recon/snapshot': result = {'st': {'running':True,'iface':'wlan1mon'},'d':data,'lg':{'log':''}}
                     r.fulfill(json=result)
                 else: r.fulfill(path=str(ROOT / 'web' / (path or 'index.html')))
             page.route('http://127.0.0.1:8080/**', route)

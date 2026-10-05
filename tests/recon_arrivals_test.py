@@ -12,6 +12,7 @@ with sync_playwright() as p:
             path=r.request.url.split('http://127.0.0.1:8080/',1)[1].split('?')[0]
             if path.startswith('api/'):
                 data = fixtures() if path=='api/tools' else {'running':False} if path=='api/recon/state' else {'aps':[],'clients':[]} if path=='api/recon/data' else {'log':''}
+                if path=='api/recon/snapshot': data={'st':{'running':False},'d':{'aps':[],'clients':[]},'lg':{'log':''}}
                 r.fulfill(json=data)
             else: r.fulfill(path=str(ROOT/'web'/(path or 'index.html')))
         page.route('http://127.0.0.1:8080/**',route)
@@ -37,11 +38,18 @@ with sync_playwright() as p:
         }''')
         expect(page.locator('.re-arrival')).to_have_count(2)
         expect(page.locator('#re-arrival-feed')).to_contain_text('<New WiFi>')
+        page.evaluate('''() => {
+            const ap={bssid:'AA:BB:CC:DD:EE:05',essid:'Five',channel:'36',power:'-55',last:new Date().toISOString()};
+            reconLast.d.aps.push(ap);reconSample();
+            if(reconWaterfall[0].cells['5:36']!==-55)throw Error('Missing 5 GHz samples');
+        }''')
         page.get_by_role('button',name='Waterfall',exact=True).tap()
+        assert page.evaluate('reconWaterfallBand')=='both'
+        assert '2.4 and 5' in page.locator('#re-graph').get_attribute('aria-label')
         assert 'WiFi signal waterfall' in page.locator('#re-graph').get_attribute('aria-label')
         page.get_by_role('button',name='5 GHz',exact=True).tap()
         assert page.evaluate('reconGraphView')=='waterfall'
-        page.get_by_role('button',name='2.4 GHz',exact=True).tap()
+        page.get_by_role('button',name='Both bands',exact=True).tap()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.screenshot(path=f'/tmp/recon-waterfall-{width}x{height}.png',full_page=True)
         page.locator('.re-arrival').filter(has_text='<New WiFi>').tap()
