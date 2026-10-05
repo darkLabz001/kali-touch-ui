@@ -344,15 +344,6 @@ def _ipv4():
 
 def sysinfo():
     info = get_network_info()
-    I = info.get("wifi_iface")
-    if I and I != "none detected":
-        rc, out = _run("iw dev %s link" % I)
-        for m in re.finditer(r"SSID: (.+)", out):
-            info["ssid"] = m.group(1).strip()
-            break
-    else:
-        info["ssid"] = ""
-    info.setdefault("ssid", "")
     rc, out = _run("vcgencmd measure_temp")
     info["temp"] = ""
     if rc == 0:
@@ -379,6 +370,23 @@ def sysinfo():
     return info
 
 
+def connected_wifi():
+    """Report the connected radio, independently of the adapter chosen for scans."""
+    rc, out = _run("iw dev")
+    interfaces = re.findall(r"Interface\s+(\S+)", out) if rc == 0 else []
+    rc, route = _run("ip route show default")
+    preferred = re.findall(r"\bdev\s+(\S+)", route) if rc == 0 else []
+    interfaces.sort(key=lambda iface: iface not in preferred)
+    for iface in interfaces:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", iface):
+            continue
+        rc, link = _run("iw dev %s link" % iface)
+        match = re.search(r"^\s*SSID:\s*(.+)$", link, re.MULTILINE)
+        if rc == 0 and "Connected to " in link and match:
+            return iface, match.group(1).strip()
+    return None, ""
+
+
 def get_network_info():
     info = {
         "hostname": socket.gethostname(),
@@ -392,8 +400,9 @@ def get_network_info():
     if rc == 0:
         info["uptime"] = out.strip()
     # ip link shows which interfaces have a carrier / are up
-    iface = _wifi_iface()
+    iface, ssid = connected_wifi()
     info["wifi_iface"] = iface if iface else "none detected"
+    info["ssid"] = ssid
     return info
 
 
@@ -2718,21 +2727,12 @@ def scan_aps():
 
 
 # ---------------- OTA update ----------------
+from updater import Updater
 OTA_REPO = "https://github.com/darkLabz001/kali-touch-ui.git"
 OTA_BRANCH = "main"
 OTA_DIR = "/opt/kali-touch-ui"
-OTA_LOG = "/tmp/ota.log"
 APP_VERSION = "1.4.3"
-_ota_busy = False
-_ota_store_changed = False
-_ota_lock = threading.Lock()
-
-
-def _ota_log(msg):
-    line = "[%s] %s" % (time.strftime("%H:%M:%S"), msg)
-    with open(OTA_LOG, "a") as f:
-        f.write(line + "\n")
-    return line
+OTA = Updater(OTA_REPO, OTA_DIR)
 
 
 def _ota_sh(cmd, timeout=60):
@@ -2746,140 +2746,13 @@ def _ota_sh(cmd, timeout=60):
         return 2, "timeout"
 
 
-def ota_local_sha():
-    rc, out = _ota_sh("git -C %s rev-parse HEAD" % OTA_DIR, 15)
-    return out.strip() if rc == 0 else ""
 
-
-def ota_remote_sha():
-    rc, out = _ota_sh("git -C %s ls-remote %s refs/heads/%s" % (OTA_DIR, OTA_REPO, OTA_BRANCH), 30)
-    if rc == 0:
-        for line in out.splitlines():
-            parts = line.split()
-            if len(parts) == 2 and parts[1] == "refs/heads/%s" % OTA_BRANCH:
-                return parts[0]
-    return ""
-
-
-def ota_status():
-    global _ota_store_changed
-    local = ota_local_sha()
-    remote = ota_remote_sha()
-    log = ""
-    if os.path.exists(OTA_LOG):
-        with open(OTA_LOG) as f:
-            log = f.read()
-    pct, stage = _ota_progress()
-    return {
-        "version": APP_VERSION,
-        "method": "git" if local else "none",
-        "installed": bool(local),
-        "local": local,
-        "local_short": local[:7],
-        "remote": remote,
-        "remote_short": remote[:7] if remote else "",
-        "up_to_date": bool(remote) and remote == local,
-        "store_changed": _ota_store_changed,
-        "busy": _ota_busy,
-        "pct": pct,
-        "stage": stage or None,
-        "log": log,
-    }
+def ota_status(force=False):
+    return OTA.status(force)
 
 
 def ota_update():
-    global _ota_busy
-    with _ota_lock:
-        if _ota_busy:
-            return {"ok": False, "msg": "an update is already running", "busy": True}
-        _ota_busy = True
-    threading.Thread(target=_ota_run, daemon=True).start()
-    return {"ok": True, "msg": "update started"}
-
-
-def _ota_progress():
-    if not os.path.exists(OTA_LOG):
-        return None, ""
-    with open(OTA_LOG) as f:
-        txt = f.read()
-    pct = None
-    for m in re.finditer(r"Receiving objects:\s+(\d+)%", txt):
-        pct = int(m.group(1))
-    stage = ""
-    for marker, label in (
-        ("syntax check", "verifying"),
-        ("reset --hard", "applying"),
-        ("Fetching", "fetching"),
-        ("Receiving objects", "fetching"),
-        ("update complete", "done"),
-    ):
-        if marker in txt:
-            stage = label
-            break
-    return pct, stage
-
-
-def _ota_run():
-    """Run the fetch/apply/syntax/restart cycle (called from a thread)."""
-    global _ota_busy
-    restart = False
-    try:
-        with open(OTA_LOG, "w") as f:
-            f.write("")
-        _ota_log("checking for updates…")
-        if not ota_local_sha():
-            _ota_log("install not set up for OTA (not a git repo)")
-            return {"ok": False, "msg": "OTA not configured on this install"}
-        rc, out = _ota_sh("git -C %s fetch --progress %s +refs/heads/%s:refs/remotes/touchui-update/%s" %
-                          (OTA_DIR, OTA_REPO, OTA_BRANCH, OTA_BRANCH), 120)
-        if rc != 0:
-            _ota_log("fetch FAILED: " + out[-200:])
-            return {"ok": False, "msg": "fetch failed: " + out[-80:]}
-        old = ota_local_sha()
-        rc, remote = _ota_sh("git -C %s rev-parse refs/remotes/touchui-update/%s" % (OTA_DIR, OTA_BRANCH), 15)
-        if rc or not re.fullmatch(r"[0-9a-f]{40}", remote):
-            _ota_log("fetch FAILED: could not identify the downloaded update")
-            return {"ok": False, "msg": "downloaded update unavailable"}
-        if remote == old:
-            _ota_log("already up to date (%s)" % old[:7])
-            return {"ok": True, "msg": "already up to date"}
-        rc, out = _ota_sh("git -C %s reset --hard %s" % (OTA_DIR, remote), 90)
-        if rc != 0:
-            _ota_log("reset FAILED: " + out[-200:])
-            return {"ok": False, "msg": "apply failed: " + out[-80:]}
-        _ota_log("syntax check…")
-        ok = _ota_sh("node --check %s/web/assets/app.js" % OTA_DIR, 20)
-        ok2 = _ota_sh("python3 -m py_compile %s/backend/server.py" % OTA_DIR, 20)
-        if ok[0] != 0 or ok2[0] != 0:
-            _ota_log("check FAILED — rolling back to %s" % old[:7])
-            _ota_sh("git -C %s reset --hard %s" % (OTA_DIR, old), 60)
-            _ota_log("rolled back; update aborted")
-            return {"ok": False, "msg": "post-update check failed; rolled back"}
-        _ota_log("update complete (%s)" % remote[:7])
-        restart = True
-        return {"ok": True, "msg": "updated — restarting service"}
-    except Exception as e:
-        _ota_log("ERROR: %s" % e)
-        return {"ok": False, "msg": str(e)}
-    finally:
-        _ota_busy = False
-        if restart:
-            # Relaunch the kiosk FIRST: the backend restart below reaps this
-            # service's whole cgroup, so a pkill after it would never run and
-            # Chromium would keep serving the pre-update page from memory.
-            # The `[c]` bracket makes the pattern not match this shell's own
-            # cmdline (which embeds the pattern text). The restart runs under
-            # `systemd-run` so it's a cgroup of its own: `systemctl restart`
-            # from inside this unit would be SIGKILLed while systemd reaps
-            # this service's cgroup, then never actually restart anything.
-            subprocess.Popen(
-                "pkill -f 'chrom[i]um.*--app=http://127.0.0.1:8080' 2>/dev/null; "
-                "if command -v systemd-run >/dev/null 2>&1; then "
-                "sudo -n systemd-run --collect --quiet --no-block sh -c "
-                "'sleep 2; systemctl restart touchui-entertainment kali-touchui'; "
-                "else sleep 2; sudo -n systemctl restart touchui-entertainment kali-touchui; fi",
-                shell=True,
-            )
+    return OTA.start()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -2986,7 +2859,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/sysinfo":
             self._send(200, json.dumps(sysinfo()).encode())
         elif path == "/api/ota/status":
-            self._send(200, json.dumps(ota_status()).encode())
+            self._send(200, json.dumps(ota_status(force=urlparse(self.path).query == "check=1")).encode())
         elif path == "/api/apt/status":
             pct, stage = self._apt_progress()
             self._send(200, json.dumps({

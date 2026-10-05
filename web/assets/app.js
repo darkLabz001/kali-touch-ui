@@ -257,6 +257,7 @@ function showSettings() {
 
   const otaCard = el("div", "set-card");
   otaCard.appendChild(el("div", "set-title", "⚡ OTA Update"));
+  otaCard.id = "ota-card";
   const otaMeta = el("div", "ota-meta", "checking…");
   const otaBtns = el("div", "ota-btns");
   const otaCheck = el("button", "set-btn", "⟳ Check");
@@ -293,7 +294,7 @@ function showSettings() {
   c.appendChild(page);
 
   scanBtn.onclick = () => doWifiScan(scanBtn, netList, statusRow);
-  otaCheck.onclick = () => { otaMeta.textContent = "checking…"; refreshOta(otaMeta, otaLog, otaUpd, otaCheck, otaBar, otaFill); };
+  otaCheck.onclick = () => { otaMeta.textContent = "Checking GitHub…"; refreshOta(otaMeta, otaLog, otaUpd, otaCheck, otaBar, otaFill, true); };
   otaUpd.onclick = () => otaRun(otaMeta, otaLog, otaUpd, otaCheck, otaBar, otaFill);
   aptBtn.onclick = () => aptRun(aptMeta, aptBtn, aptLog, aptBar, aptFill);
   refreshOta(otaMeta, otaLog, otaUpd, otaCheck, otaBar, otaFill);
@@ -316,10 +317,13 @@ function showSettings() {
 
 function setProgressBar(bar, fill, pct) {
   bar.style.display = "block";
+  bar.setAttribute("role", "progressbar"); bar.setAttribute("aria-valuemin", "0"); bar.setAttribute("aria-valuemax", "100");
   if (pct == null) {
+    bar.removeAttribute("aria-valuenow");
     fill.classList.add("indet");
     fill.style.width = "";
   } else {
+    bar.setAttribute("aria-valuenow", String(Math.max(0, Math.min(100, Number(pct)))));
     fill.classList.remove("indet");
     fill.style.width = Math.max(2, Math.min(100, Number(pct))) + "%";
   }
@@ -330,30 +334,59 @@ function hideProgressBar(bar, fill) {
   fill.style.width = "";
 }
 
-function refreshOta(meta, logBox, updBtn, chkBtn, bar, fill) {
-  api("/api/ota/status").then(s => {
-    if (!s.installed) {
-      meta.textContent = "OTA not enabled — reinstall from GitHub first.";
-      updBtn.disabled = true;
-      hideProgressBar(bar, fill);
+function refreshOta(meta, logBox, updBtn, chkBtn, bar, fill, force = false) {
+  if (!meta.isConnected || bar.dataset.polling === "1") return;
+  bar.dataset.polling = "1";
+  api("/api/ota/status" + (force ? "?check=1" : "")).then(s => {
+    delete bar.dataset.polling;
+    if (!meta.isConnected) return;
+    const labels = {checking:"Checking installation",downloading:"Downloading",applying:"Applying files",verifying:"Verifying code",configuring:"Preparing services",restarting:"Restarting device UI",done:"Update complete",failed:"Update failed"};
+    const stage = labels[s.stage] || "Working";
+    bar.dataset.stage = s.stage || "idle";
+    meta.dataset.stage = s.stage || "idle";
+    if (s.log) showOtaLog(logBox, s.log);
+    if (s.busy) {
+      bar.dataset.updating = "1"; bar.dataset.retries = "0";
+      meta.textContent = stage + (s.phase_pct != null ? " · " + s.phase_pct + "% downloaded" : "") + " — " + (s.message || "Please wait…");
+      setProgressBar(bar, fill, s.pct); bar.setAttribute("aria-valuetext", meta.textContent);
+      updBtn.disabled = chkBtn.disabled = true;
+      clearTimeout(bar._otaTimer);
+      bar._otaTimer = setTimeout(() => refreshOta(meta, logBox, updBtn, chkBtn, bar, fill), 1000);
       return;
     }
-    if (s.busy) {
-      meta.textContent = "updating · " + (s.stage || "working");
-      setProgressBar(bar, fill, s.pct);
-      showOtaLog(logBox, s.log);
-      updBtn.disabled = true;
-      chkBtn.disabled = true;
-      setTimeout(() => refreshOta(meta, logBox, updBtn, chkBtn, bar, fill), 2000);
+    delete bar.dataset.updating;
+    chkBtn.disabled = false;
+    if (s.status === "failed") {
+      meta.textContent = "Update failed — " + (s.error || s.message || "Tap Retry.");
+      updBtn.textContent = "↻ Retry update"; updBtn.disabled = false;
+      setProgressBar(bar, fill, s.pct || 0); bar.setAttribute("aria-valuetext", meta.textContent);
+      return;
+    }
+    if (s.status === "complete") {
+      meta.textContent = (s.message || "Update installed successfully.") + " · " + s.local_short;
+      setProgressBar(bar, fill, 100); bar.setAttribute("aria-valuetext", meta.textContent);
+      updBtn.disabled = s.up_to_date; updBtn.textContent = "⬇ Update";
+      if (bar.dataset.started === "1") { delete bar.dataset.started; setTimeout(() => location.reload(), 1500); }
       return;
     }
     hideProgressBar(bar, fill);
-    const st = !s.remote ? "could not check GitHub — try again" : s.up_to_date ? "up to date" : "update available";
-    meta.textContent = "v" + (s.version || "?") + " · local " + s.local_short + " · latest " + (s.remote_short || "—") + " · " + st;
-    updBtn.disabled = s.busy || s.up_to_date || !s.remote;
-    chkBtn.disabled = s.busy;
+    if (!s.installed) { meta.textContent = "OTA unavailable: installation is not a Git checkout."; updBtn.disabled = true; return; }
+    meta.textContent = "Installed " + s.local_short + " · GitHub " + (s.remote_short || "unreachable") + " · " + (!s.remote ? "Check failed — try again" : s.up_to_date ? "Up to date" : "Update available");
+    updBtn.disabled = s.up_to_date || !s.remote;
   }).catch(() => {
-    meta.textContent = "backend unreachable";
+    delete bar.dataset.polling;
+    if (!meta.isConnected) return;
+    if (bar.dataset.updating === "1") {
+      const retries = Number(bar.dataset.retries || 0) + 1; bar.dataset.retries = String(retries);
+      if (retries < 45) {
+        meta.textContent = "Waiting for the device to reconnect…";
+        bar._otaTimer = setTimeout(() => refreshOta(meta, logBox, updBtn, chkBtn, bar, fill), 1500);
+        return;
+      }
+      delete bar.dataset.updating;
+      meta.textContent = "Could not confirm completion. Tap Check when the device reconnects.";
+    } else meta.textContent = "Device unreachable — tap Check to retry.";
+    chkBtn.disabled = false; updBtn.disabled = true;
   });
 }
 
@@ -392,37 +425,21 @@ function otaRun(meta, logBox, updBtn, chkBtn, bar, fill) {
     armConfirm(updBtn, "⬇ Update", () => otaRun(meta, logBox, updBtn, chkBtn, bar, fill));
     return;
   }
-  delete updBtn.dataset.armed;
-  updBtn.classList.remove("confirming");
-  updBtn.textContent = "⬇ Update";
-  updBtn.disabled = true;
-  chkBtn.disabled = true;
+  delete updBtn.dataset.armed; updBtn.classList.remove("confirming");
+  updBtn.textContent = "⬇ Update"; updBtn.disabled = chkBtn.disabled = true;
+  meta.textContent = "Starting update…"; bar.dataset.stage = "checking";
+  setProgressBar(bar, fill, 0);
   api("/api/ota/update", "POST").then(r => {
-    const t = setInterval(() => {
-      api("/api/ota/status").then(s => {
-        if (logBox.style.display === "none" && (s.log || "").trim()) showOtaLog(logBox, s.log);
-        if (s.busy) {
-          meta.textContent = "updating · " + (s.stage || "working");
-          setProgressBar(bar, fill, s.pct);
-        } else {
-          clearInterval(t);
-          hideProgressBar(bar, fill);
-          if (logBox.style.display === "none") showOtaLog(logBox, s.log);
-          logBox.appendChild(el("div", "ota-line" + (r.ok ? " ok" : " err"), (r.ok ? "✓ " : "✗ ") + (r.msg || "done")));
-          meta.textContent = "v" + (s.version || "?") + " · local " + s.local_short + " · latest " + (s.remote_short || "—") + (s.up_to_date ? " · up to date" : " · update available");
-          if (r.ok && s.store_changed !== false) {
-            meta.textContent += " · reloading UI…";
-            setTimeout(() => location.reload(), 1200);
-            return;
-          }
-          setTimeout(() => refreshOta(meta, logBox, updBtn, chkBtn, bar, fill), 1500);
-        }
-      }).catch(() => {});
-    }, 2500);
-  }).catch(e => {
-    meta.textContent = "update failed: " + e;
-    updBtn.disabled = false;
-    chkBtn.disabled = false;
+    if (!r.ok) {
+      meta.textContent = "Update could not start — " + (r.msg || r.error || "Try again.");
+      bar.dataset.stage = "failed"; updBtn.disabled = chkBtn.disabled = false;
+      return;
+    }
+    bar.dataset.started = bar.dataset.updating = "1";
+    refreshOta(meta, logBox, updBtn, chkBtn, bar, fill);
+  }).catch(() => {
+    meta.textContent = "Could not start update: device unreachable.";
+    bar.dataset.stage = "failed"; updBtn.disabled = chkBtn.disabled = false;
   });
 }
 

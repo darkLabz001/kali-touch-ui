@@ -1,59 +1,95 @@
-"""Exercise the updater alone, with Git and service restarts mocked."""
-import pathlib
-import re
-import subprocess
+"""Update failures, live progress, restart recovery, and dependency preflight."""
+import io
+import json
+import os
+from pathlib import Path
+import sys
 import tempfile
-import threading
-import time
 import unittest
-from unittest.mock import Mock
-
-SOURCE = (pathlib.Path(__file__).resolve().parents[1] / 'backend/server.py').read_text()
-BLOCK = SOURCE.split('# ---------------- OTA update ----------------')[1].split('class Handler(')[0]
+from unittest.mock import Mock, patch
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
+from updater import Updater
 
 
 class OtaTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.ns = dict(os=__import__('os'), re=re, time=time, threading=threading, subprocess=Mock())
-        exec(BLOCK, self.ns)
-        self.ns['OTA_LOG'] = str(pathlib.Path(self.tmp.name) / 'ota.log')
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.manager = Updater('https://github.com/example/screen.git', self.root / 'app', self.root / 'state')
         self.old, self.new = 'a' * 40, 'b' * 40
-        self.ns['ota_local_sha'] = lambda: self.old
-
-    def test_download_uses_same_repo_as_check_and_applies_fetched_commit(self):
-        commands = []
-        def shell(cmd, timeout=60):
-            commands.append(cmd)
-            return (0, self.new) if 'rev-parse refs/remotes/touchui-update/' in cmd else (0, '')
-        self.ns['_ota_sh'] = shell
-        self.ns['_ota_run']()
-        repo = self.ns['OTA_REPO']
-        self.assertTrue(repo.endswith('/kali-touch-ui.git'))
-        self.assertTrue(any('fetch --progress ' + repo in cmd for cmd in commands))
-        self.assertIn('git -C /opt/kali-touch-ui reset --hard ' + self.new, commands)
-        self.assertFalse(any('origin/' in cmd for cmd in commands))
-        self.assertIn('touchui-entertainment kali-touchui', self.ns['subprocess'].Popen.call_args.args[0])
-
-    def test_failed_fetch_and_non_git_install_never_restart(self):
-        for installed in (True, False):
-            with self.subTest(installed=installed):
-                self.ns['ota_local_sha'] = lambda: self.old if installed else ''
-                self.ns['_ota_sh'] = Mock(return_value=(1, 'offline'))
-                self.ns['_ota_run']()
-                self.ns['subprocess'].Popen.assert_not_called()
-                self.assertFalse(self.ns['_ota_busy'])
-
-    def test_validation_failure_rolls_back_without_restart(self):
-        def shell(cmd, timeout=60):
-            if 'rev-parse refs/remotes/' in cmd: return 0, self.new
-            if 'node --check' in cmd: return 1, 'bad syntax'
+        self.manager.local_sha = lambda: self.old
+        self.manager.job = dict(status='running', stage='checking', pct=0, log=[], pid=os.getpid(), id='test')
+        self.manager.fetch = Mock(return_value=(0, ''))
+        def git(*args, **kwargs):
+            if args[0] == 'rev-parse': return 0, self.new
+            if args[0] == 'ls-remote': return 0, self.new + '\trefs/heads/main'
             return 0, ''
-        self.ns['_ota_sh'] = Mock(side_effect=shell)
-        self.ns['_ota_run']()
-        self.assertTrue(any('reset --hard ' + self.old in c.args[0] for c in self.ns['_ota_sh'].call_args_list))
-        self.ns['subprocess'].Popen.assert_not_called()
+        self.manager.git = Mock(side_effect=git)
+        self.manager.command = Mock(return_value=(0, ''))
+
+    def test_restart_result_survives_backend_restart(self):
+        self.manager.run()
+        self.assertEqual(self.manager.job['status'], 'restarting')
+        restored = Updater(self.manager.repo, self.manager.directory, self.manager.state_directory)
+        restored.local_sha = lambda: self.new
+        restored.git = Mock(return_value=(0, self.new + '\trefs/heads/main'))
+        persisted = json.loads((self.manager.state_directory / 'update.json').read_text())
+        persisted['pid'] = -1
+        (self.manager.state_directory / 'update.json').write_text(json.dumps(persisted))
+        result = restored.status()
+        self.assertEqual((result['status'], result['pct'], result['busy']), ('complete', 100, False))
+        self.assertTrue(result['up_to_date'])
+        self.assertTrue(any(c.args[0][0] == 'systemd-run' for c in self.manager.command.call_args_list))
+
+    def test_syntax_failure_reports_reason_and_rolls_back(self):
+        self.manager.command.side_effect = lambda args, *a: (1, 'Unexpected token') if args[0] == 'node' else (0, '')
+        self.manager.run()
+        self.assertEqual(self.manager.job['status'], 'failed')
+        self.assertIn('Unexpected token', self.manager.job['error'])
+        self.manager.git.assert_any_call('reset', '--hard', self.old)
+        self.assertFalse(any(c.args[0][0] == 'systemd-run' for c in self.manager.command.call_args_list))
+
+    def test_download_failure_never_applies_or_claims_success(self):
+        self.manager.fetch.return_value = 1, 'GitHub unreachable'
+        self.manager.run()
+        self.assertEqual(self.manager.job['status'], 'failed')
+        self.assertIn('GitHub unreachable', self.manager.job['error'])
+        self.manager.git.assert_not_called()
+
+    def test_missing_node_fails_before_start(self):
+        with patch('updater.shutil.which', return_value=None): result = self.manager.start()
+        self.assertFalse(result['ok']); self.assertIn('nodejs', result['msg'])
+        self.manager.fetch.assert_not_called()
+
+    def test_streamed_git_percentage_is_visible_before_download_finishes(self):
+        del self.manager.fetch
+        process = Mock(stdout=io.BytesIO(b'Receiving objects: 0%\rReceiving objects: 50%\rReceiving objects: 100%\n'))
+        process.wait.return_value = 0
+        with patch('updater.subprocess.Popen', return_value=process):
+            rc, out = self.manager.fetch()
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.manager.job['phase_pct'], 100)
+        self.assertEqual(self.manager.job['pct'], 65)
+        self.assertEqual(self.manager.job['stage'], 'downloading')
+
+    def test_failed_state_write_returns_immediate_error(self):
+        self.manager.save = Mock(side_effect=OSError('No space left'))
+        with patch('updater.shutil.which', return_value='/usr/bin/node'):
+            result = self.manager.start()
+        self.assertFalse(result['ok']); self.assertIn('No space left', result['msg'])
+        self.assertFalse(self.manager.busy)
+
+    def test_interrupted_update_is_reported_after_restart(self):
+        self.manager.save()
+        self.manager.local_sha = lambda: self.old
+        result = self.manager.status()
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('interrupted', result['error'])
+
+    def test_busy_poll_does_not_wait_for_github(self):
+        self.manager.busy = True
+        self.manager.status()
+        self.manager.git.assert_not_called()
 
 
 if __name__ == '__main__': unittest.main()

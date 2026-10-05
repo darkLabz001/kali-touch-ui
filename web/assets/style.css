@@ -1155,3 +1155,18 @@ body::after {
 @media(max-width:500px) { .re-legend { grid-template-columns: 1fr; } }
 
 .re-top .re-legend { margin: 8px 0; max-height: 155px; overflow-y: auto; align-content: start; }
+
+/* OTA and package updates share a visible, accessible progress track. */
+.ota-meta { padding: 10px 0; color: #bad5c9; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.ota-btns { display: flex; gap: 10px; flex-wrap: wrap; }
+.ota-bar { display: none; height: 20px; margin: 14px 0; background: #071512; border: 1px solid #34574b; border-radius: 10px; overflow: hidden; }
+.ota-fill { height: 100%; width: 0; border-radius: 9px; background: linear-gradient(90deg,#167f63,#47d8ac); transition: width .25s ease; }
+.ota-bar[data-stage="done"] .ota-fill { background: #47d8ac; }
+.ota-bar[data-stage="failed"] { border-color: #bd5858; }
+.ota-bar[data-stage="failed"] .ota-fill { background: #bd5858; }
+.ota-meta[data-stage="failed"] { color: #ffb1a9; }
+.ota-log { max-height: 160px; overflow: auto; margin-top: 10px; padding: 10px; border: 1px solid #234239; border-radius: 8px; background: #071512; font: 12px/1.5 monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ota-line.err { color: #ffb1a9; }
+.ota-fill.indet { width: 35%; animation: ota-working 1.5s ease-in-out infinite alternate; }
+@keyframes ota-working { from { transform: translateX(0); } to { transform: translateX(180%); } }
+@media (prefers-reduced-motion: reduce) { .ota-fill { transition: none; } .ota-fill.indet { animation: none; } }

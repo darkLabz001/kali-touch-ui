@@ -339,3 +339,17 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 python3 tests/recon_map_test.py
 python3 tests/screen_editions_test.py
 ```
+
+## Update progress and failures
+
+**Settings → OTA Update** shows checking, downloading, applying, verifying,
+service setup, and restart stages. The download percentage comes from Git's
+streamed output; the overall bar advances at completed stages. A successful start
+is not treated as a successful update. Failures show their reason and offer Retry.
+Status is stored under `~/.local/state/kali-touch-ui/update.json` on the device,
+so restart completion and interrupted updates remain visible after reconnecting.
+JavaScript validation requires Node.js (`sudo apt-get install nodejs`). Python
+syntax checks do not write cache files into the installation. The updater installs
+the device helper service before restarting it, including on older 4-inch installs.
+
+WiFi status reports the connected radio independently of the USB scanning adapter.
