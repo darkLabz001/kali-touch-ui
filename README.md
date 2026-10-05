@@ -251,8 +251,14 @@ hdmi_cvt=480 800 60 6 0 0 0
 hdmi_drive=1
 hdmi_force_hotplug=1
 hdmi_ignore_edid=0xa00002
-dtoverlay=ads7846_waveshare,penirq=25,xmin=150,xmax=3900,ymin=100,ymax=3950,speed=50000
+dtparam=spi=on
+dtoverlay=ads7846,cs=1,penirq=25,penirq_pull=2,speed=50000,keep_vref_on=0,swapxy=0,pmax=255,xohms=150,xmin=200,xmax=3900,ymin=200,ymax=3900
 ```
+
+The `ads7846` overlay (stock firmware) drives the panel's resistive touch
+controller over SPI0/CS1 with `PENIRQ` on GPIO25 — it creates the
+`ADS7846 Touchscreen` input device. `dtparam=spi=on` is required or the
+controller never probes.
 
 ```text
 # /boot/firmware/cmdline.txt — append:
@@ -293,3 +299,43 @@ XPT2046 / goodix panels with zero config.
 | Nothing happens when tapping Update/Upgrade | Kiosk Chromium blocks `confirm()` — use two-tap confirm: tap again when the button shows *"Tap again to confirm"*. |
 | Black screen after reboot (kiosk runs) | A Waveshare-typical 62 Hz EDID mode is active; the panel only syncs at 60 Hz. Re-apply the [Panel timing](#panel-timing-480x800-at-60-hz) block + `video=HDMI-A-1:480x800@60`, reboot, confirm `xrandr` shows `59.96*`. |
 | Injection rejected | Fields accept only `[A-Za-z0-9._:/:[]-]` on purpose. Don't fight it — add a named param instead. |
+## Current 4-inch interface
+
+This repository remains the **4-inch edition**, with its 480×800 HDMI timing and
+SPI touch configuration. It now includes the grouped touchscreen menus, device
+dashboard, Python payload library, screen recording controls, and live Recon views
+shared with the 7-inch edition. Opening the UI without a profile defaults to `4inch`.
+
+Open **Wireless → WiFi apps → Recon — PineAP**. **Live channels** plots observed
+networks by WiFi channel and signal strength, with separate 2.4 / 5 GHz controls.
+**Network Map** connects access points to observed clients. Tap a node or network
+card for details and target controls; opening controls does not start a tool.
+**Signal history** shows a separate 60-second timeline. Observations refresh every
+three seconds, and scan errors remain visible. Recon needs a separate monitor-mode
+WiFi adapter; it keeps the built-in WiFi available for connectivity. Background
+scanning and bounded 64 KiB logs prevent console output from flooding `/tmp`.
+
+Updates check and download from `darkLabz001/kali-touch-ui`, branch `main`.
+They restart the backend and the `touchui-entertainment` device helper.
+For an existing install, install the helper service before using the new dashboard:
+
+```bash
+sudo apt-get install python3-tk nodejs ffmpeg x11-xserver-utils xdotool xinput
+sudo install -m 0644 /opt/kali-touch-ui/scripts/touchui-entertainment.service /etc/systemd/system/
+sudo install -d -o kali -g kali -m 0755 /home/kali/payloads
+sudo systemctl daemon-reload
+sudo systemctl enable --now touchui-entertainment
+sudo systemctl restart kali-touchui
+```
+
+The payloads in `payloads/` can be imported through **My Scripts → Add .py file**.
+Recording clips stay under `~/Videos/KaliTouch/`; an optional Discord webhook can
+be configured in `~/.config/kali-touch-ui/discord-webhook` with mode `0600`.
+
+Validation uses mocked wireless observations and device controls:
+
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py'
+python3 tests/recon_map_test.py
+python3 tests/screen_editions_test.py
+```

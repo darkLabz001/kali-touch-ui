@@ -1,0 +1,87 @@
+/* Screen editions share code; physical-size profiles adjust navigation density. */
+html[data-edition="4inch"] .hub-home { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+html[data-edition="4inch"] .hub-card { min-height: 130px; }
+html[data-edition="4inch"] .hub-card .t { font-size: 20px; }
+html[data-edition="35inch"] .hub-home { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 600px), (max-height: 420px) {
+  .topbar { min-height: 42px; height: 42px; padding: 2px 6px; gap: 5px; }
+  .topbar .brand { font-size: 14px; white-space: nowrap; }
+  .topbar .badge { display: none; }
+  .topbar .btn-gear, .topbar .btn-back { min-width: 38px; width: 38px; height: 38px; min-height: 38px; padding: 0; }
+  .sysline { min-height: 20px; height: 20px; padding: 2px 7px; gap: 7px; }
+  .sysline .sl-net { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .content { padding: 7px; }
+  .hub-home { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .hub-card, html[data-edition="4inch"] .hub-card { min-height: 104px; padding: 10px 6px; gap: 5px; }
+  .hub-card .ico { font-size: 26px; }
+  .hub-card .t, html[data-edition="4inch"] .hub-card .t { font-size: 16px; }
+  .hub-description { display: none; }
+  .hub-count { font-size: 10px; }
+  .hub-tabs { gap: 5px; }
+  .hub-tab { min-width: 90px; min-height: 40px; padding: 6px; font-size: 12px; }
+  .tool-btn { padding: 8px; min-height: 58px; font-size: 14px; }
+  .tool-btn .sub { font-size: 11px; }
+  .hub-home-button { min-height: 38px; padding: 6px 10px; }
+  .hub-page .section-head h2 { font-size: 18px; }
+  .deck-heading h2 { font-size: 18px; }
+  .deck-rates strong { font-size: 18px; }
+  .deck-fresh { max-width: 70px; }
+  .deck-button { padding: 6px 10px; }
+  .ds-title { font-size: 36px; }
+  .ds-top { font-size: 8px; }
+  .ds-tagline { font-size: 10px; }
+  .ds-status { font-size: 11px; }
+  body.terminal-active .topbar .brand, body.terminal-active .sysline { display: none; }
+  body.terminal-active .terminal-title { display: block; font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  body.terminal-active #btn-term { display: none; }
+  body.terminal-active .topbar .spacer { min-width: 0; }
+  body.terminal-active .content { overflow: hidden; padding: 4px; }
+  body.terminal-active .term-page { display: grid; height: 100%; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 38px 38px; gap: 4px; }
+  body.terminal-active .term-page > .section-head { display: none; }
+  body.terminal-active .term-out { min-height: 0; min-width: 0; padding: 5px; font-size: 11px; line-height: 1.25; }
+  body.terminal-active .term-keys { display: flex; overflow-x: auto; gap: 4px; min-width: 0; touch-action: pan-x; }
+  body.terminal-active .tk { min-height: 36px; padding: 0 8px; flex: 0 0 40px; font-size: 12px; }
+  body.terminal-active .tk.rst { font-size: 10px; flex-basis: 58px; }
+  body.terminal-active .term-input-row { min-width: 0; gap: 5px; }
+  body.terminal-active .term-input-row input { height: 38px; padding: 5px; font-size: 14px; }
+  body.terminal-active .term-go { min-height: 38px; height: 38px; width: 42px; padding: 0; }
+  .kbd { padding: 3px; }
+  .kb-acc { display: none; }
+  .kb-row { margin: 3px 0; gap: 3px; }
+  .kb-key { min-height: 36px; height: 36px; min-width: 0; font-size: 15px; padding: 0; }
+}
+@media (max-height: 420px) and (max-width: 740px) {
+  body.terminal-active .term-page { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 36px; gap: 4px; }
+  body.terminal-active .term-out { grid-column: 1 / -1; }
+  body.terminal-active .term-keys { grid-row: 2; grid-column: 1; }
+  body.terminal-active .term-input-row { grid-row: 2; grid-column: 2; }
+  body.terminal-active .term-input-row input, body.terminal-active .term-go { min-height: 36px; height: 36px; }
+  .kb-key { height: 32px; min-height: 32px; }
+  .kb-row { margin: 2px 0; gap: 3px; }
+  .deck-controls { padding: 5px 10px 8px; }
+  .deck-controls-heading h2 { font-size: 18px; }
+  .deck-controls .deck-button { min-height: 36px; }
+  .deck-sliders { grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; }
+  .deck-slider input { height: 34px; }
+  .deck-shortcuts { grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 4px; }
+  .deck-shortcuts .deck-button { min-height: 40px; font-size: 12px; }
+  .deck-control-status { margin-top: 8px; font-size: 11px; }
+  .ent-page { gap: 6px; }
+  .ent-head { gap: 6px; }
+  .ent-head h2 { font-size: 17px; }
+  .ent-note { font-size: 10px; }
+  .ent-button { min-height: 34px; padding: 6px 8px; font-size: 12px; }
+  .ent-game-layout { grid-template-columns: minmax(0,1fr) 130px; gap: 8px; }
+  .ent-snake { width: 100%; max-width: 270px; max-height: 180px; }
+  .ent-side { gap: 6px; }
+  .ent-score { font-size: 12px; }
+  .ent-status { font-size: 11px; min-height: 14px; }
+  .ent-pad { grid-template-rows: repeat(2, 38px); gap: 4px; }
+  .ent-dir { font-size: 20px; }
+  .ent-memory { gap: 4px; }
+  .ent-memory-card { min-height: 34px; font-size: 20px; }
+}
+/* The 4-inch edition also supports 800x480 landscape panels. */
+@media (min-width: 740px) and (orientation: landscape) {
+  html[data-edition="4inch"] .hub-home { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}

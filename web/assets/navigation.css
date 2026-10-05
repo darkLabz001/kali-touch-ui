@@ -1,0 +1,32 @@
+.hub-home { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.hub-card { color: var(--text); min-height: 170px; padding: 14px 12px; gap: 7px; }
+.hub-card .ico { font-size: 34px; line-height: 1; }
+.hub-card .t { font-size: 20px; }
+.hub-description { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.hub-count { color: var(--accent); font: 11px monospace; margin-top: 3px; }
+.hub-page { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.hub-page .section-head { margin: 0; justify-content: space-between; }
+.hub-home-button, .hub-tab {
+  min-height: 44px; padding: 8px 14px; border: 1px solid var(--border);
+  border-radius: 10px; background: var(--panel2); color: var(--text); font-size: 14px;
+}
+.hub-tabs { display: flex; flex-wrap: wrap; gap: 7px; }
+.hub-tab { flex: 1; }
+.hub-tab.selected { color: var(--accent); border-color: var(--accent-dim); background: #102b1a; }
+.hub-page .tb-mid { overflow-wrap: anywhere; }
+.hub-page .root-tag { flex-shrink: 0; }
+@media (orientation: landscape) and (max-height: 650px) {
+  .hub-home { gap: 12px; }
+  .hub-card { min-height: 168px; padding: 12px; gap: 7px; }
+  .hub-card .ico { font-size: 34px; }
+  .hub-card .t { font-size: 20px; }
+}
+@media (max-width: 600px) {
+  .hub-home { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hub-card { min-height: 150px; }
+}
+
+@media (min-width: 740px) {
+  .hub-home { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .hub-card .t { font-size: 17px; }
+}

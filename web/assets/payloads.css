@@ -1,0 +1,9 @@
+.payload-page { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.payload-page .section-head { margin-bottom: 0; }
+.payload-page h2, .payload-page .tb-mid { overflow-wrap: anywhere; }
+.payload-page .run-row .set-btn { flex: 1; }
+.payload-note { color: var(--muted); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.payload-message { color: var(--warn); font-size: 13px; overflow-wrap: anywhere; }
+.payload-message:empty { display: none; }
+.payload-output { min-height: 120px; max-height: 32vh; user-select: text; }
+.payload-page button:disabled { opacity: .45; }

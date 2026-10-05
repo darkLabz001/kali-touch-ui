@@ -1,0 +1,38 @@
+/* Keep terminal output and the complete touch keyboard together on 7-inch panels. */
+.terminal-title, .terminal-keyboard-toggle { display: none; }
+body.terminal-active .terminal-keyboard-toggle { display: flex; flex-shrink: 0; }
+body.terminal-active .term-input-row, body.terminal-active .term-keys { flex-shrink: 0; }
+body.terminal-active .term-out { overflow-x: auto; white-space: pre; word-break: normal; touch-action: pan-x pan-y; }
+
+@media (orientation: landscape) and (max-height: 650px) and (min-width: 740px) {
+  body.terminal-active .topbar { min-height: 48px; height: 48px; padding: 2px 10px; gap: 8px; }
+  body.terminal-active .topbar .brand, body.terminal-active .sysline { display: none; }
+  body.terminal-active .terminal-title {
+    display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; color: var(--accent); font-size: 17px; font-weight: 700;
+  }
+  body.terminal-active .topbar .spacer { min-width: 0; }
+  body.terminal-active .content { overflow: hidden; padding: 5px 8px; }
+  body.terminal-active .term-page {
+    display: grid; height: 100%; min-height: 0;
+    grid-template-columns: minmax(380px, 1.3fr) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) 44px; gap: 5px;
+  }
+  body.terminal-active .term-page > .section-head { display: none; }
+  body.terminal-active .term-out {
+    grid-column: 1 / -1; min-height: 0; min-width: 0;
+    padding: 5px 8px; font-size: 12px; line-height: 1.35;
+  }
+  body.terminal-active .term-keys {
+    grid-row: 2; grid-column: 1; grid-template-columns: repeat(9, minmax(0, 1fr)); gap: 3px;
+  }
+  body.terminal-active .tk { min-height: 44px; padding: 0; font-size: 12px; }
+  body.terminal-active .tk.rst { font-size: 10px; }
+  body.terminal-active .term-input-row { grid-row: 2; grid-column: 2; min-width: 0; gap: 5px; }
+  body.terminal-active .term-input-row input { padding: 6px 8px; font-size: 15px; height: 44px; }
+  body.terminal-active .term-go { width: 46px; min-height: 44px; height: 44px; padding: 0; }
+  body.terminal-active .kbd { padding: 3px 5px; }
+  body.terminal-active .kb-acc { display: none; }
+  body.terminal-active .kb-row { margin: 3px 1px; gap: 5px; }
+  body.terminal-active .kb-key { height: 38px; min-height: 38px; font-size: 16px; }
+}

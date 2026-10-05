@@ -1,0 +1,55 @@
+/* Keep scrolling inside the viewport, including when the touch keyboard opens. */
+#app { height: 100dvh; min-height: 0; }
+.topbar, .sysline { flex-shrink: 0; }
+.topbar { overflow: hidden; }
+.content { min-height: 0; min-width: 0; }
+.grid { grid-template-columns: repeat(auto-fill, minmax(min(180px, 100%), 1fr)); }
+.card, .tool-btn > div, .re-stat, .wdr-inp, .wdr-sel { min-width: 0; }
+body.kbd-open #app { height: calc(100dvh - var(--keyboard-height, 230px)); }
+body.kbd-open .content { padding-bottom: 12px; }
+.kb-key { min-height: 44px; }
+.tk, .mini-btn, .re-chip .chip { min-height: 44px; }
+.field input:not([type]) {
+  width: 100%;
+  min-height: 44px;
+  background: var(--panel2);
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  padding: 11px 12px;
+  font-size: 16px;
+  color: var(--text);
+  outline: none;
+}
+.field input:not([type]):focus { border-color: var(--accent); }
+
+/* 7-inch landscape panels: all eleven home cards fit in three rows at 800x480. */
+@media (orientation: landscape) and (max-height: 650px) {
+  .topbar { min-height: 56px; padding: 5px 12px; gap: 10px; }
+  .topbar .brand { font-size: 18px; }
+  .sysline { min-height: 24px; padding: 4px 12px; }
+  .content { padding: 10px 12px; }
+  .grid { gap: 10px; }
+  .card { min-height: 112px; padding: 8px 10px; gap: 4px; border-radius: 12px; }
+  .card .ico { font-size: 28px; line-height: 1.1; }
+  .card .t { font-size: 15px; }
+  .card-eyebrow { font-size: 9px; letter-spacing: .1em; }
+  .card-stat { font-size: 10px; gap: 6px; letter-spacing: 0; }
+  .section-head { margin-bottom: 10px; }
+  .section-head h2 { font-size: 19px; }
+  .tool-list { gap: 8px; }
+  .tool-btn { padding: 10px 12px; min-height: 64px; font-size: 16px; }
+  .tool-btn .ch { width: 40px; height: 40px; min-width: 40px; }
+  .run-page, .settings-page { gap: 10px; }
+  .field input[type="text"], .field input[type="password"] { padding: 11px 12px; font-size: 16px; }
+  .big-btn { padding: 12px; min-height: 46px; font-size: 16px; }
+  .console { min-height: 110px; max-height: 32vh; padding: 10px; }
+  .radar-canvas { height: 240px; }
+  .boot-splash { justify-content: flex-start; padding-top: 13vh; }
+  .ds-top { top: 16px; font-size: 10px; }
+  .ds-title { font-size: 44px; margin-top: 0; }
+  .ds-labs { margin-top: 10px; padding: 5px 22px; font-size: 16px; }
+  .ds-tagline { margin-top: 12px; }
+  .ds-status { margin-top: 24px; }
+  .ds-bar { margin-top: 8px; width: 260px; }
+  .ds-bootdots { margin-top: 12px; }
+}

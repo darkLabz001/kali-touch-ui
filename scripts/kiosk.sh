@@ -16,12 +16,13 @@ fi
 # (e.g. refresh rate or pixel clock) makes the panel go black.
 vcgencmd display_power 1 >/dev/null 2>&1 || true
 if command -v xrandr >/dev/null 2>&1 && [ -n "${DISPLAY:-}" ]; then
-    xrandr --output HDMI-1 --mode 480x800 --rate 60 2>/dev/null || true
+    xrandr --output HDMI-1 --mode 480x800 --rate 59.96 2>/dev/null || xrandr --output HDMI-1 --mode 480x800 --rate 60 2>/dev/null || true
     xset dpms force on >/dev/null 2>&1 || true
 fi
 
 URL="${TOUCHUI_URL:-http://127.0.0.1:8080}"
 BACKEND="$URL"
+case "$URL" in *\?*) URL="${URL}&edition=4inch" ;; *) URL="${URL}?edition=4inch" ;; esac
 
 # Wait up to 30s for the backend to come up.
 for i in $(seq 1 30); do
@@ -49,6 +50,8 @@ RESTART_DELAY="${TOUCHUI_RESTART_DELAY:-3}"
 while true; do
     "$BROWSER" \
         --kiosk \
+        --no-sandbox \
+        --disable-dev-shm-usage \
         --noerrdialogs \
         --disable-infobars \
         --disable-session-crashed-bubble \

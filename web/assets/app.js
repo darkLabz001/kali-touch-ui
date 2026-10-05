@@ -29,8 +29,8 @@ function initTelemetry() {
     try {
       const j = await fetch("/api/sysinfo?t=" + Date.now()).then(r => r.json());
       const i = j.info || j;
-      if (i.ssid) { miss = 0; lastNet = i.ssid + " · " + (i.ip || "--"); }
-      else if (++miss > 3) { lastNet = "no-wifi · " + (i.ip || "--"); }
+      if (i.ssid) { miss = 0; lastNet = i.ssid; }
+      else if (++miss > 3) { lastNet = "no-wifi"; }
       if (i.temp) lastTmp = i.temp + "°C";
       if (net && lastNet) net.textContent = lastNet;
       if (tmp && lastTmp) tmp.textContent = lastTmp;
@@ -49,10 +49,21 @@ async function api(path, method = "GET", body) {
   return r.json();
 }
 
+let touchUiLoading = false;
 async function load() {
-  state.data = await api("/api/tools");
-  try { state.wordlists = (await api("/api/wordlists")).wordlists || []; } catch (e) { state.wordlists = []; }
-  showHome();
+  if (touchUiLoading) return;
+  touchUiLoading = true;
+  try {
+    const response = await fetch('/api/tools', { signal: AbortSignal.timeout(8000) });
+    if (!response.ok) throw new Error('Tools unavailable');
+    state.data = await response.json();
+    showHome();
+    window.dispatchEvent(new Event('touchui:ready'));
+    api('/api/wordlists').then(data => { state.wordlists = data.wordlists || []; }).catch(() => {});
+  } catch (error) {
+    window.dispatchEvent(new Event('touchui:loading-error'));
+    setTimeout(load, 1500);
+  } finally { touchUiLoading = false; }
 }
 
 function showHome() {
@@ -77,7 +88,7 @@ function showHome() {
     return card;
   };
   const ready = state.data.launchers.filter(x => x.exists).length;
-  grid.appendChild(mkc("self-built", "◈", "Custom Tools", "9 apps", "acc-cy", () => showCustomTools()));
+  grid.appendChild(mkc("self-built", "◈", "Custom Tools", "12 apps", "acc-cy", () => showCustomTools()));
   grid.appendChild(mkc("launcher", "⚒", "Click-Run Tools", ready + "/" + state.data.launchers.length + " ready", "acc-gr", () => showLaunchers()));
   state.data.sections.forEach(([id, title, ico]) => {
     const n = state.data.tools.filter(t => t.section === id).length;
@@ -131,17 +142,9 @@ function launchBtn(l) {
   return b;
 }
 
-function showCustomTools() {
-  state.section = null; state.tool = null; state.settings = false; state.terminal = false; state.running = false;
-  const c = document.querySelector(".content");
-  document.querySelector(".btn-back").style.display = "flex";
-  c.innerHTML = "";
-  const head = el("div", "section-head");
-  head.appendChild(el("h2", null, "◈ Custom Tools"));
-  head.appendChild(el("div", "hint", "9 apps · self-built"));
-  c.appendChild(head);
-  const list = el("div", "tool-list");
-  const apps = [
+function customApps() {
+  return [
+    ["Py", "Python Payloads", "add your own .py scripts · run and view output", "#7ee0ff", showPayloads],
     ["◉", "Recon — PineAP", "live AP scan · signal graph · deauth", "#39ff14", showRecon],
     ["✕", "Handshake Hunter", "capture handshakes · crack with hashcat", "#00d9ff", showHunter],
     ["◎", "WiFi Radar", "live radar sweep of scanned APs", "#ffc93d", showRadar],
@@ -154,6 +157,19 @@ function showCustomTools() {
     ["❒", "Login Clone", "clone a login page onto the portal", "#7bffb0", showClone],
     ["⛧", "Auto-Pentest", "capture→deauth→crack→decrypt one-press", "#ff5577", showPentest],
   ];
+}
+
+function showCustomTools() {
+  state.section = null; state.tool = null; state.settings = false; state.terminal = false; state.running = false;
+  const c = document.querySelector(".content");
+  document.querySelector(".btn-back").style.display = "flex";
+  c.innerHTML = "";
+  const head = el("div", "section-head");
+  head.appendChild(el("h2", null, "◈ Custom Tools"));
+  head.appendChild(el("div", "hint", "12 apps · self-built"));
+  c.appendChild(head);
+  const list = el("div", "tool-list");
+  const apps = customApps();
   apps.forEach(([ico, title, sub, col, fn]) => {
     const b = el("div", "tool-btn");
     const ch = el("div", "ch", ico);
@@ -283,8 +299,10 @@ function showSettings() {
   refreshOta(otaMeta, otaLog, otaUpd, otaCheck, otaBar, otaFill);
   aptStatus(aptMeta, aptBtn, aptLog, aptBar, aptFill);
 
-  Promise.all([api("/api/network"), api("/api/wifi/scan")]).then(([net, scan]) => {
+  api("/api/network").then(net => {
     renderNetworkInfo(infoBody, net.info);
+  }).catch(() => { infoBody.textContent = "Device info unavailable"; });
+  api("/api/wifi/scan").then(scan => {
     if (!scan.error) {
       wifiNets = scan.networks;
       renderNetList(netList, scan.networks, statusRow);
@@ -330,9 +348,9 @@ function refreshOta(meta, logBox, updBtn, chkBtn, bar, fill) {
       return;
     }
     hideProgressBar(bar, fill);
-    const st = s.up_to_date ? "up to date" : "update available";
+    const st = !s.remote ? "could not check GitHub — try again" : s.up_to_date ? "up to date" : "update available";
     meta.textContent = "v" + (s.version || "?") + " · local " + s.local_short + " · latest " + (s.remote_short || "—") + " · " + st;
-    updBtn.disabled = s.busy || s.up_to_date;
+    updBtn.disabled = s.busy || s.up_to_date || !s.remote;
     chkBtn.disabled = s.busy;
   }).catch(() => {
     meta.textContent = "backend unreachable";
@@ -459,7 +477,7 @@ function renderNetworkInfo(body, info) {
   const rows = [
     ["Hostname", info.hostname],
     ["OS", info.os],
-    ["IP", info.ip || "—"],
+    ["IP address", info.ip || "—"],
     ["Kernel", info.kernel],
     ["Arch", info.arch],
     ["Uptime", info.uptime || "—"],
@@ -895,8 +913,9 @@ function termConnect(cmd) {
     } else if (rst) {
       rst.style.display = "none";
     }
+    const followOutput = out.scrollHeight - out.scrollTop - out.clientHeight < 32;
     tFeed(text);
-    out.scrollTop = out.scrollHeight;
+    if (followOutput) out.scrollTop = out.scrollHeight;
   };
   es.onerror = () => {};
 }
@@ -926,7 +945,7 @@ function showTerminal(title, cmd) {
   });
   const rst = el("button", "tk rst", "↻ restart");
   rst.id = "term-restart";
-  rst.onclick = () => termConnect(termInit && termInit.cmd);
+  rst.onclick = () => termConnect(cmd || (termInit && termInit.cmd));
   keys.appendChild(rst);
   page.appendChild(keys);
 
@@ -943,7 +962,6 @@ function showTerminal(title, cmd) {
 
   const send = () => {
     const v = inp.value;
-    if (v.length === 0) return;
     inp.value = "";
     api("/api/term/input", "POST", { data: v + "\r" }).catch(() => {});
   };
@@ -953,7 +971,7 @@ function showTerminal(title, cmd) {
   go.onclick = send;
   state.termSend = send;
   setTimeout(() => inp.focus(), 150);
-  termConnect(termInit && termInit.cmd);
+  termConnect(cmd || (termInit && termInit.cmd));
 }
 
 function onKeyHold(btn, repeat, delay = 350, interval = 60) {
@@ -1186,205 +1204,160 @@ let reconTimer = null;
 let reconFilter = { band: "all", sec: "all" };
 let reconTab = "aps";
 let reconOpen = null;
+let reconClient = null;
+let reconError = "";
+let reconGraphView = "channels";
+let reconGraphBand = "2.4";
 let reconDirty = false;
 let reconSeries = {};
 let reconTrend = {};
 const RECON_COLORS = ["#39ff14", "#00d9ff", "#ffb000", "#ff3bd3", "#ffe000", "#4cf0c0"];
 
+const reconColors = new Map();
 function reconColor(bssid) {
-  const keys = Object.keys(reconSeries);
-  const i = keys.indexOf(bssid);
-  if (reconPageOpen && i >= 0) return RECON_COLORS[i % RECON_COLORS.length];
-  return "#39ff14";
+  if (!reconColors.has(bssid)) reconColors.set(bssid, RECON_COLORS[reconColors.size % RECON_COLORS.length]);
+  return reconColors.get(bssid);
+}
+
+function reconSignal(ap) {
+  const value = Number(ap.power);
+  return Number.isFinite(value) && value <= -1 && value >= -110 ? value : null;
+}
+
+function reconChartNetworks() {
+  const aps = reconLast.d.aps.filter(reconMatch).filter(ap => reconSignal(ap) !== null);
+  if (reconOpen) return aps.filter(ap => ap.bssid === reconOpen);
+  return aps.sort((a, b) => reconSignal(b) - reconSignal(a)).slice(0, 3);
 }
 
 function reconSample() {
-  const cur = {};
-  for (const ap of reconLast.d.aps) cur[ap.bssid] = parseInt(ap.power, 10);
-  for (const b of Object.keys(cur)) if (!(b in reconSeries)) reconSeries[b] = [];
-  for (const k of Object.keys(reconSeries)) {
-    const s = reconSeries[k];
-    const v = (k in cur) ? cur[k] : NaN;
-    if (!(s.length && Number.isNaN(s[s.length - 1]) && Number.isNaN(v))) s.push(v);
-    if (s.length > 60) s.shift();
+  const now = Date.now();
+  const cur = new Map(reconLast.d.aps.map(ap => [ap.bssid, reconSignal(ap)]));
+  for (const key of cur.keys()) if (!reconSeries[key]) reconSeries[key] = [];
+  for (const key of Object.keys(reconSeries)) {
+    const series = reconSeries[key];
+    series.push({time: now, value: cur.get(key) ?? null});
+    while (series.length && series[0].time < now - 60000) series.shift();
+    if (!series.some(p => p.value !== null)) { delete reconSeries[key]; continue; }
+    const last = series.at(-1)?.value, previous = series.at(-2)?.value;
+    reconTrend[key] = last === null || previous == null ? "flat" : last - previous > 1.5 ? "up" : last - previous < -1.5 ? "down" : "flat";
   }
-  reconTrend = {};
-  for (const k of Object.keys(reconSeries)) {
-    const s = reconSeries[k];
-    if (s.length < 2 || Number.isNaN(s[s.length - 1]) || Number.isNaN(s[s.length - 2])) {
-      reconTrend[k] = "flat";
-    } else {
-      const d = s[s.length - 1] - s[s.length - 2];
-      reconTrend[k] = d > 1.5 ? "up" : (d < -1.5 ? "down" : "flat");
-    }
-  }
-  renderReconGraph();
-  renderReconLegend();
-  renderReconChstrip();
+  renderReconGraph(); renderReconLegend(); renderReconChstrip();
 }
 
 function renderReconGraph() {
+  document.querySelectorAll('[data-graph-view]').forEach(b => b.classList.toggle('on', b.dataset.graphView === reconGraphView));
+  document.querySelectorAll("[data-graph-band]").forEach(b => b.classList.toggle("on", reconGraphView === "channels" && b.dataset.graphBand === reconGraphBand));
+  if (reconGraphView === "history") { renderReconHistory(); return; }
+  const cv = document.getElementById("re-graph"); if (!cv) return;
+  const w = cv.clientWidth || 450, h = cv.clientHeight || 190, dpr = Math.min(window.devicePixelRatio || 1,2);
+  cv.width = Math.round(w*dpr); cv.height = Math.round(h*dpr);
+  const ctx = cv.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.fillStyle = '#071512'; ctx.fillRect(0,0,w,h);
+  const L=48,R=16,T=30,B=30,pw=w-L-R,ph=h-T-B;
+  const min = reconGraphBand === '2.4' ? 1 : 32, max = reconGraphBand === '2.4' ? 14 : 177;
+  const X = ch => L+pw*(ch-min)/(max-min), Y = v => T+ph*(-20-Math.max(-100,Math.min(-20,v)))/80;
+  ctx.font='11px sans-serif'; ctx.textBaseline='middle';
+  for(const v of [-20,-40,-60,-80,-100]) {
+    ctx.strokeStyle='#234239';ctx.beginPath();ctx.moveTo(L,Y(v));ctx.lineTo(w-R,Y(v));ctx.stroke();
+    ctx.fillStyle='#9cb9ad';ctx.textAlign='right';ctx.fillText(String(v),L-8,Y(v));
+  }
+  ctx.textAlign='left';ctx.fillStyle='#b8d6ca';ctx.fillText('Signal · dBm',L,13);
+  ctx.textAlign='right';ctx.fillText((reconLast.st.running?'LIVE':'STOPPED')+' · '+reconGraphBand+' GHz channels',w-R,13);
+  const channels = reconGraphBand === '2.4' ? [1,3,6,9,11,14] : [36,64,100,132,149,165];
+  ctx.textAlign='center'; for(const ch of channels) ctx.fillText(String(ch),X(ch),h-12);
+  const aps = reconLast.d.aps.filter(reconMatch).filter(ap=>scanBand(ap)===reconGraphBand && reconSignal(ap)!==null);
+  cv._reconHits=[];
+  ctx.save();ctx.beginPath();ctx.rect(L,T,pw,ph);ctx.clip();
+  for(const ap of aps.slice().sort((a,b)=>reconSignal(a)-reconSignal(b))) {
+    const x=X(Number(ap.channel)),y=Y(reconSignal(ap)),color=reconColor(ap.bssid);
+    ctx.globalAlpha=reconOpen && reconOpen !== ap.bssid ? 0.25 : 1;
+    ctx.strokeStyle=color;ctx.lineWidth=reconOpen===ap.bssid?3:1.5;
+    ctx.beginPath();ctx.moveTo(x,T+ph);ctx.lineTo(x,y);ctx.stroke();
+    ctx.fillStyle=color;ctx.beginPath();ctx.arc(x,y,reconOpen===ap.bssid?6:4,0,Math.PI*2);ctx.fill();
+    cv._reconHits.push({x,y,ap});
+  }
+  ctx.restore();ctx.globalAlpha=1;
+  if(!aps.length) {ctx.fillStyle='#b8d6ca';ctx.textAlign='center';ctx.fillText('No '+reconGraphBand+' GHz observations yet',w/2,T+ph/2);}
+  cv.setAttribute('aria-label',aps.length?aps.map(ap=>(ap.essid||ap.bssid)+': channel '+ap.channel+', '+ap.power+' dBm').join('; '):'No network observations');
+}
+
+function renderReconHistory() {
   const cv = document.getElementById("re-graph");
   if (!cv) return;
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const w = cv.clientWidth || 450;
-  const h = cv.clientHeight || 150;
-  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
-    cv.width = Math.round(w * dpr);
-    cv.height = Math.round(h * dpr);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2), w = cv.clientWidth || 450, h = cv.clientHeight || 190;
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#071512"; ctx.fillRect(0, 0, w, h);
+  const L = 48, R = 16, T = 30, B = 30, pw = w - L - R, ph = h - T - B;
+  const now = Date.now(), X = t => L + pw * (t - now + 60000) / 60000;
+  const Y = v => T + ph * (-20 - Math.max(-100, Math.min(-20, v))) / 80;
+  ctx.font = "11px sans-serif"; ctx.textBaseline = "middle";
+  for (const v of [-20, -40, -60, -80, -100]) {
+    ctx.strokeStyle = "#234239"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(L, Y(v)); ctx.lineTo(w-R, Y(v)); ctx.stroke();
+    ctx.fillStyle = "#9cb9ad"; ctx.textAlign = "right"; ctx.fillText(String(v), L-8, Y(v));
   }
-  const ctx = cv.getContext("2d");
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const g = ctx.createLinearGradient(0, 0, 0, h);
-  g.addColorStop(0, "#050b08");
-  g.addColorStop(1, "#020604");
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, w, h);
-  const L = 34, R = 6, T = 12, B = 8;
-  const pw = w - L - R, ph = h - T - B;
-  const yTop = -30, yBot = -95;
-  const Y = (v) => T + ((yTop - v) / (yTop - yBot)) * ph;
-  ctx.textAlign = "right";
-  ctx.textBaseline = "middle";
-  for (let v = -40; v >= -90; v -= 10) {
-    ctx.strokeStyle = "rgba(20,90,68,.30)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(L, Y(v));
-    ctx.lineTo(w - R, Y(v));
-    ctx.stroke();
-    ctx.fillStyle = "#3a8a6e";
-    ctx.font = "8px monospace";
-    ctx.fillText(String(v), L - 5, Y(v));
+  ctx.textAlign = "left"; ctx.fillStyle = "#b8d6ca"; ctx.fillText("Signal · dBm", L, 13);
+  ctx.textAlign = "right"; ctx.fillText(reconLast.st.running ? "LIVE · last 60 seconds" : "Scan stopped", w-R, 13);
+  for (const [age, label] of [[60,"60s ago"],[30,"30s ago"],[0,"Now"]]) {
+    ctx.textAlign = age === 60 ? "left" : age === 0 ? "right" : "center";
+    ctx.fillText(label, L + pw*(60-age)/60, h-12);
   }
-  ctx.fillStyle = "#1d5c47";
-  ctx.textAlign = "left";
-  for (let k = 1; k <= 5; k++) {
-    const x = L + (pw * k) / 6;
-    ctx.strokeStyle = "rgba(20,90,68,.12)";
-    ctx.beginPath();
-    ctx.moveTo(x, T);
-    ctx.lineTo(x, T + ph);
-    ctx.stroke();
-  }
-  ctx.strokeStyle = "#0f4a36";
-  ctx.lineWidth = 1;
-  ctx.strokeRect(L, T, pw, ph);
-  ctx.fillStyle = "#1f6b50";
-  ctx.font = "8px monospace";
-  ctx.fillText("RSSI " + yTop + ".." + yBot + " dBm", L + 6, T - 5);
-  ctx.fillStyle = "#2f6f5a";
-  ctx.textAlign = "right";
-  ctx.fillText("~60s", w - R - 2, T - 5);
-  const keys = Object.keys(reconSeries);
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  keys.forEach((k, i) => {
-    const pts = reconSeries[k];
-    const len = pts.length;
-    if (len < 2) return;
-    const path = new Path2D();
-    let started = false;
-    for (let j = 0; j < len; j++) {
-      const v = pts[j];
-      if (Number.isNaN(v)) { started = false; continue; }
-      const x = L + (pw * (j + 1)) / (len + 1);
-      const y = Y(v);
-      if (!started) { path.moveTo(x, y); started = true; }
-      else path.lineTo(x, y);
+  const networks = reconChartNetworks();
+  ctx.save(); ctx.beginPath(); ctx.rect(L,T,pw,ph); ctx.clip();
+  for (const ap of networks) {
+    const samples = reconSeries[ap.bssid] || [], color = reconColor(ap.bssid);
+    ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.lineJoin = "round"; ctx.beginPath();
+    let previous = null;
+    for (const sample of samples) {
+      if (sample.value === null) { previous = null; continue; }
+      if (!previous || sample.time - previous.time > 6000) ctx.moveTo(X(sample.time),Y(sample.value));
+      else ctx.lineTo(X(sample.time),Y(sample.value));
+      previous = sample;
     }
-    const col = RECON_COLORS[i % RECON_COLORS.length];
-    ctx.strokeStyle = col;
-    ctx.globalAlpha = 0.16;
-    ctx.lineWidth = 4.5;
-    ctx.stroke(path);
-    ctx.globalAlpha = 1;
-    ctx.lineWidth = 1.7;
-    ctx.stroke(path);
-    const last = pts[len - 1];
-    if (!Number.isNaN(last)) {
-      const x = L + (pw * len) / (len + 1);
-      const y = Y(last);
-      ctx.shadowColor = col;
-      ctx.shadowBlur = 6;
-      ctx.fillStyle = "#d7ffe9";
-      ctx.beginPath();
-      ctx.arc(x, y, 2.4, 0, 7);
-      ctx.fill();
-      ctx.shadowBlur = 0;
-    }
-  });
-  ctx.globalAlpha = 1;
+    ctx.stroke();
+    const last = samples.at(-1);
+    if (last && last.value !== null) { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(Math.min(w-R-3,X(last.time)),Y(last.value),3,0,Math.PI*2); ctx.fill(); }
+  }
+  ctx.restore();
+  if (!networks.length) {
+    ctx.fillStyle = "#b8d6ca"; ctx.textAlign = "center";
+    ctx.fillText(reconLast.st.running ? "Waiting for signal observations…" : "Start a scan to see network signals", w/2, T+ph/2);
+  }
+  cv.setAttribute("aria-label", networks.length ? networks.map(ap => (ap.essid || ap.bssid)+": "+ap.power+" dBm").join("; ") : "No signal observations");
 }
 
 function renderReconLegend() {
-  const leg = document.getElementById("re-legend");
-  if (!leg) return;
-  leg.innerHTML = "";
-  const top = reconLast.d.aps.slice()
-    .sort((a, b) => (parseInt(b.power, 10) || -100) - (parseInt(a.power, 10) || -100))
-    .slice(0, 4);
-  for (const ap of top) {
-    const item = el("span", "re-leg");
-    const dot = el("span", "re-dot");
-    dot.style.background = reconColor(ap.bssid);
-    const name = ap.essid ? ap.essid : "hiddenssid";
-    const st = document.createElement("strong");
-    st.textContent = name.slice(0, 12) + " ";
-    const val = el("span", null, (ap.power || "??") + " dBm ");
-    const tr = reconTrend[ap.bssid] || "flat";
-    const arrow = el("span", "re-tr", tr === "up" ? "▲" : tr === "down" ? "▼" : "—");
-    arrow.style.color = tr === "up" ? "#39ff14" : tr === "down" ? "#ff4d4d" : "#5f8a7a";
-    item.append(dot, st, val, arrow);
-    leg.appendChild(item);
+  const leg = document.getElementById("re-legend"); if (!leg) return;
+  leg.replaceChildren();
+  const reset = el("button", "re-chart-reset", reconOpen ? "Show all networks" : reconGraphView === "history" ? "Strongest 3 · tap a network to isolate" : "Live networks · channel and signal · tap to select");
+  reset.onclick = () => reconSelect(null); leg.append(reset);
+  const networks = reconGraphView === "history" ? reconChartNetworks() : reconLast.d.aps.filter(reconMatch).filter(ap => scanBand(ap) === reconGraphBand).sort((a,b)=>Number(b.power)-Number(a.power));
+  for (const ap of networks) {
+    const item = el("button", "re-chart-network"); item.style.borderLeftColor = reconColor(ap.bssid);
+    item.append(el("strong", "", ap.essid || "Hidden · " + ap.bssid), el("span", "", ap.power + " dBm · CH " + ap.channel + " · " + reconLast.d.clients.filter(c => (c.bssid || "").toUpperCase() === ap.bssid.toUpperCase()).length + " clients"));
+    item.title = ap.bssid; item.onclick = () => reconSelect(ap); leg.append(item);
   }
 }
 
 function renderReconChstrip() {
-  const cv = document.getElementById("re-chstrip");
-  if (!cv) return;
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const w = cv.clientWidth || 450;
-  const h = 20;
-  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
-    cv.width = Math.round(w * dpr);
-    cv.height = Math.round(h * dpr);
+  const strip = document.getElementById("re-chstrip"); if (!strip) return;
+  strip.replaceChildren();
+  const counts = new Map();
+  for (const ap of reconLast.d.aps.filter(reconMatch)) {
+    const ch = Number(ap.channel); if (ch > 0) counts.set(ch,(counts.get(ch)||0)+1);
   }
-  const ctx = cv.getContext("2d");
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, w, h);
-  const counts = {};
-  for (const ap of reconLast.d.aps) {
-    const ch = parseInt(ap.channel, 10);
-    if (!Number.isNaN(ch)) counts[ch] = (counts[ch] || 0) + 1;
-  }
-  const mid = w * 0.45;
-  const x24 = (ch) => 2 + ((ch - 1) / 14) * (mid - 4);
-  const x5 = (ch) => mid + ((ch - 36) / (165 - 36)) * (w - mid - 4);
-  ctx.font = "7px monospace";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "top";
-  ctx.fillStyle = "#1c4a3a";
-  ctx.fillText("2.4GHz", mid / 2, 0);
-  ctx.fillText("5GHz", mid + (w - mid) / 2, 0);
-  ctx.fillStyle = "#2f6f5a";
-  for (const ch of [1, 6, 11, 36, 100, 149, 165]) {
-    ctx.fillText(String(ch), ch <= 14 ? x24(ch) : x5(ch), 17);
-  }
-  for (const ch in counts) {
-    const c = parseInt(ch, 10);
-    const n = counts[ch];
-    const x = c <= 14 ? x24(c) : x5(c);
-    const bh = Math.min(12, 3 + n * 2.4);
-    ctx.fillStyle = "#39ff14";
-    ctx.fillRect(x - 1.5, 2 + (12 - bh), 3, bh);
-  }
+  strip.append(el("span", "ra-sub", "Networks per channel"));
+  for (const [ch,count] of [...counts].sort((a,b)=>a[0]-b[0])) strip.append(el("span", "re-channel-count", "CH " + ch + " · " + count));
+  if (!counts.size) strip.append(el("span", "ra-sub", "No channel observations"));
 }
 
 function leaveRecon() {
   if (reconTimer) { clearInterval(reconTimer); reconTimer = null; }
   reconPageOpen = false;
   reconOpen = null;
+  reconClient = null;
+  reconError = "";
   reconSeries = {};
   reconTrend = {};
 }
@@ -1414,9 +1387,81 @@ function el(tag, cls, text) {
   return e;
 }
 
+function reconSelect(ap, client = null) {
+  reconOpen = ap ? ap.bssid : null;
+  reconClient = client ? client.station : null;
+  reconDo(reconLast.st, reconLast.d, reconLast.lg);
+}
+
+function reconTargetActions(ap, client = null) {
+  const box = el("div", "ra-detail recon-target");
+  box.append(el("strong", null, client ? client.station : (ap.essid || "Hidden network")),
+    el("div", "ra-sub", client ? "Observed AP: " + (ap ? ap.bssid : "not observed") + " · Probes: " + (client.probes || "none") : ap.bssid + " · CH " + ap.channel));
+  const actions = el("div", "ra-btnrow");
+  const copy = el("button", "mini-btn", "Copy address");
+  copy.onclick = async () => {
+    try { await navigator.clipboard.writeText(client ? client.station : ap.bssid); copy.textContent = "Copied"; }
+    catch (_) { copy.textContent = "Copy unavailable"; }
+  };
+  actions.append(copy);
+  if (ap) {
+    const prepare = el("button", "mini-btn", "Open target controls");
+    prepare.onclick = () => {
+      leaveRecon(); showDeauth();
+      document.getElementById("deauth-bssid").value = ap.bssid;
+      document.getElementById("deauth-ch").value = ap.channel;
+      document.getElementById("deauth-client").value = client ? client.station : "";
+    };
+    actions.append(prepare);
+    if (client) {
+      const parent = el("button", "mini-btn", "View access point");
+      parent.onclick = () => { reconTab = "aps"; reconSelect(ap); };
+      actions.append(parent);
+    }
+  }
+  box.append(actions);
+  return box;
+}
+
+function reconMap(d) {
+  const map = el("div", "recon-map");
+  map.append(el("div", "ra-sub", "Observed associations · not physical locations · tap a node"));
+  const aps = d.aps.filter(reconMatch).slice().sort((a, b) => Number(b.power) - Number(a.power));
+  const known = new Set(d.aps.map(a => a.bssid.toUpperCase()));
+  const node = (label, key, selected, action) => {
+    const b = el("button", "recon-node" + (selected ? " selected" : ""), label);
+    b.dataset.node = key; b.onclick = action; b.setAttribute("aria-pressed", String(selected));
+    return b;
+  };
+  for (const ap of aps.slice(0, 40)) {
+    const clients = d.clients.filter(c => (c.bssid || "").toUpperCase() === ap.bssid.toUpperCase());
+    const branch = el("div", "recon-branch");
+    branch.append(node((ap.essid || "Hidden network") + " · CH " + ap.channel + " · " + ap.power + " dBm · " + clients.length + " clients",
+      ap.bssid, reconOpen === ap.bssid && !reconClient, () => reconSelect(ap)));
+    const leaves = el("div", "recon-leaves");
+    for (const client of clients.slice(0, 12)) leaves.append(node(client.station + " · " + client.power + " dBm", client.station,
+      reconClient === client.station, () => reconSelect(ap, client)));
+    if (!clients.length) leaves.append(el("div", "ra-sub", "No clients observed"));
+    if (clients.length > 12) leaves.append(el("div", "ra-sub", "+" + (clients.length - 12) + " more in Clients"));
+    branch.append(leaves); map.append(branch);
+  }
+  if (aps.length > 40) map.append(el("div", "ra-sub", "Showing 40 of " + aps.length + " access points; use filters or the list."));
+  const unmatched = d.clients.filter(c => !known.has((c.bssid || "").toUpperCase()));
+  if (unmatched.length) {
+    map.append(el("div", "ra-sub", "Unassociated / access point not observed"));
+    const loose = el("div", "recon-loose");
+    for (const c of unmatched.slice(0, 40)) loose.append(node(c.station, c.station, reconClient === c.station, () => reconSelect(null, c)));
+    if (unmatched.length > 40) loose.append(el("div", "ra-sub", "+" + (unmatched.length - 40) + " more in Clients"));
+    map.append(loose);
+  }
+  if (!aps.length && !unmatched.length) map.append(el("div", "re-empty", "No observations yet. Start a scan to populate the map."));
+  return map;
+}
+
 function reconRows(st, d) {
   const t = reconTab;
   const no = el("div", "re-empty", "no data yet");
+  if (t === "map") return [reconMap(d)];
   if (t === "aps") {
     const aps = d.aps.filter(reconMatch)
       .sort((a, b) => (parseInt(b.power, 10) || -100) - (parseInt(a.power, 10) || -100));
@@ -1439,7 +1484,7 @@ function reconRows(st, d) {
       t1.append(s, arr, essid, ch, sec, cl);
       const t2 = el("div", "ra-sub", ap.bssid + "  ·  " + (ap.speed || "-") + " Mb/s  ·  beacons " + (ap.beacons || "0"));
       row.append(t1, t2);
-      row.onclick = () => { reconOpen = reconOpen === ap.bssid ? null : ap.bssid; reconDirty = true; };
+      row.onclick = () => reconSelect(reconOpen === ap.bssid ? null : ap);
       out.push(row);
       if (reconOpen === ap.bssid) out.push(reconDetail(ap, d));
     }
@@ -1457,6 +1502,7 @@ function reconRows(st, d) {
     t1.append(s, mac, pk);
     const t2 = el("div", "ra-sub", "AP " + (c.bssid || "-") + "  ·  " + (c.probes ? "probes: " + c.probes : ""));
     row.append(t1, t2);
+    row.onclick = () => reconSelect(d.aps.find(a => a.bssid.toUpperCase() === (c.bssid || "").toUpperCase()), c);
     return row;
   });
 }
@@ -1505,7 +1551,7 @@ function signalColor(p) {
   return "#7f1d1d";
 }
 
-function reconDo(st, d, lg) {
+function reconDo(st, d, lg, drawChart = true) {
   const hint = document.getElementById("recon-hint");
   const stats = document.getElementById("re-stats");
   const table = document.getElementById("re-table");
@@ -1531,9 +1577,23 @@ function reconDo(st, d, lg) {
   );
   const eye = st.running ? "scanning " + ifc + " · hop abg" : "press ▶ SCAN ON";
   hint.textContent = eye;
+  const scanError = document.getElementById("recon-error");
+  if (scanError) { scanError.textContent = reconError; scanError.hidden = !reconError; }
+  document.querySelectorAll(".re-tabs [data-recon-tab]").forEach(b => b.classList.toggle("on", b.dataset.reconTab === reconTab));
+  const focused = document.activeElement?.dataset.node;
   const rows = reconRows(st, d);
   table.innerHTML = "";
   for (const r of rows) table.appendChild(r);
+  const target = document.getElementById("re-target");
+  if (target) {
+    target.replaceChildren();
+    const client = d.clients.find(c => c.station === reconClient);
+    const ap = d.aps.find(a => a.bssid.toUpperCase() === (client ? client.bssid || "" : reconOpen || "").toUpperCase());
+    if (client || ap) target.append(reconTargetActions(ap, client));
+    else if (reconOpen || reconClient) target.append(el("div", "ra-sub", "Selected device is no longer in the scan."));
+  }
+  if (focused) [...table.querySelectorAll("[data-node]")].find(b => b.dataset.node === focused)?.focus({preventScroll: true});
+  if (drawChart) { renderReconGraph(); renderReconLegend(); renderReconChstrip(); }
   if (log) { log.textContent = lg.log.trim().split("\n").slice(-24).join("\n"); log.scrollTop = 1e9; }
   if (reconDirty) { reconDirty = false; }
 }
@@ -1544,6 +1604,8 @@ function showRecon() {
   document.querySelector(".btn-back").style.display = "flex";
   reconPageOpen = true;
   reconOpen = null;
+  reconClient = null;
+  reconError = "";
   reconSeries = {};
   reconTrend = {};
   const c = document.querySelector(".content");
@@ -1562,13 +1624,28 @@ function showRecon() {
   const gwrap = el("div", "re-top");
   const legend = el("div", "re-legend");
   legend.id = "re-legend";
-  gwrap.appendChild(legend);
+  const graphControls = el("div", "re-tabs");
+  for (const [view,label] of [["channels","Live channels"],["history","Signal history"]]) {
+    const b=el("button","chip",label);b.dataset.graphView=view;
+    b.onclick=()=>{reconGraphView=view;renderReconGraph();renderReconLegend();};graphControls.append(b);
+  }
+  for(const band of ["2.4","5"]) {
+    const b=el("button","chip",band+" GHz"); b.dataset.graphBand=band;
+    b.onclick=()=>{reconGraphBand=band;reconGraphView="channels";renderReconGraph();renderReconLegend();};graphControls.append(b);
+  }
+  gwrap.append(graphControls);
   const gcanvas = document.createElement("canvas");
   gcanvas.className = "re-graph";
   gcanvas.id = "re-graph";
-  gwrap.appendChild(gcanvas);
+  gcanvas.onclick = ev => {
+    if(reconGraphView!=="channels")return;
+    const box=gcanvas.getBoundingClientRect(),x=ev.clientX-box.left,y=ev.clientY-box.top;
+    const hit=(gcanvas._reconHits||[]).slice().sort((a,b)=>Math.hypot(a.x-x,a.y-y)-Math.hypot(b.x-x,b.y-y))[0];
+    if(hit && Math.hypot(hit.x-x,hit.y-y)<24)reconSelect(hit.ap);
+  };
+  gwrap.append(gcanvas, legend);
   page.appendChild(gwrap);
-  const chcanvas = document.createElement("canvas");
+  const chcanvas = document.createElement("div");
   chcanvas.className = "re-chstrip";
   chcanvas.id = "re-chstrip";
   page.appendChild(chcanvas);
@@ -1584,8 +1661,10 @@ function showRecon() {
     try {
       const r = await fetch("/api/recon/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
       const j = await r.json();
-      hint.textContent = j.ok ? "scanning " + j.msg : "✗ " + j.msg;
-    } catch (e) {}
+      reconError = j.ok ? "" : (j.msg || "Scan could not start.");
+      hint.textContent = j.ok ? "scanning " + j.msg : "✗ " + reconError;
+    } catch (e) { reconError = "Could not contact the scanner. Try again."; }
+    reconDo(reconLast.st, reconLast.d, reconLast.lg);
     on.classList.remove("busy"); on.textContent = "▶ SCAN ON";
   };
   bar.appendChild(on);
@@ -1595,6 +1674,9 @@ function showRecon() {
   };
   bar.appendChild(off);
   page.appendChild(bar);
+  const scanError = el("div", "recon-error");
+  scanError.id = "recon-error"; scanError.setAttribute("role", "alert"); scanError.hidden = true;
+  page.appendChild(scanError);
 
   const chips = el("div", "re-chip");
   const mk = (k, v, lab) => {
@@ -1607,11 +1689,12 @@ function showRecon() {
   page.appendChild(chips);
 
   const tabs = el("div", "re-tabs");
-  const tAP = el("button", "chip on", "▣ ACCESS POINTS");
-  const tCL = el("button", "chip", "◈ CLIENTS");
-  tAP.onclick = () => { reconTab = "aps"; tAP.classList.add("on"); tCL.classList.remove("on"); reconDo(reconLast.st, reconLast.d, reconLast.lg); };
-  tCL.onclick = () => { reconTab = "clients"; tCL.classList.add("on"); tAP.classList.remove("on"); reconDo(reconLast.st, reconLast.d, reconLast.lg); };
-  tabs.append(tAP, tCL);
+  for (const [value, label] of [["aps", "▣ ACCESS POINTS"], ["clients", "◈ CLIENTS"], ["map", "NETWORK MAP"]]) {
+    const tab = el("button", "chip" + (reconTab === value ? " on" : ""), label);
+    tab.dataset.reconTab = value;
+    tab.onclick = () => { reconTab = value; reconDo(reconLast.st, reconLast.d, reconLast.lg); };
+    tabs.append(tab);
+  }
   page.appendChild(tabs);
 
   const table = el("div", "re-table");
@@ -1619,6 +1702,7 @@ function showRecon() {
   const logBox = el("div", "re-log");
   logBox.id = "re-log";
   page.appendChild(table);
+  const target = el("div", "", ""); target.id = "re-target"; page.appendChild(target);
   page.appendChild(logBox);
 
   c.appendChild(page);
@@ -1633,8 +1717,9 @@ function showRecon() {
         fetch("/api/recon/data").then(r => r.json()),
         fetch("/api/recon/log").then(r => r.json()),
       ]);
+      if (!reconPageOpen) return;
       reconLast = { st, d, lg };
-      reconDo(st, d, lg);
+      reconDo(st, d, lg, false);
       reconSample();
     } catch (e) {}
   };
@@ -3450,52 +3535,7 @@ function leavePentest() {
 
 /* ================= boot splash ================= */
 
-(function bootSplash() {
-  const SPLASH_MS = 4200;
-  const splash = document.getElementById("boot-splash");
-  if (!splash) return;
+// Boot animation is managed by startup.js.
 
-  const stateKey = "kali-touch-splash-seen";
-  const skipBtn = document.getElementById("boot-skip");
-  const fill = document.getElementById("ds-fill");
-  const status = document.getElementById("ds-status");
-  const dots = document.getElementById("ds-bootdots");
-  const statuses = [
-    "booting wireless stack…",
-    "arming monitor interface…",
-    "scanning 2.4 / 5 GHz…",
-    "raising site services…",
-  ];
-  let done = false;
-
-  function reveal() {
-    if (done) return;
-    done = true;
-    splash.classList.add("fade");
-    try { sessionStorage.setItem(stateKey, "1"); } catch (e) {}
-    setTimeout(() => splash.remove(), 850);
-  }
-
-  let seen = false;
-  try { seen = sessionStorage.getItem(stateKey) === "1"; } catch (e) {}
-  if (seen) {
-    splash.style.display = "none";
-    return;
-  }
-
-  if (skipBtn) skipBtn.addEventListener("pointerdown", reveal);
-  const t0 = Date.now();
-  const iv = setInterval(() => {
-    const e = (Date.now() - t0) / SPLASH_MS;
-    if (fill) fill.style.width = Math.min(100, Math.round(e * 112)) + "%";
-    if (status) status.textContent = statuses[Math.min(statuses.length - 1, Math.floor((e / 0.85) * statuses.length))];
-    if (dots) {
-      const active = Math.min(5, Math.floor(e / 0.2) + 1);
-      [...dots.children].forEach((c, i) => c.classList.toggle("on", i < active));
-    }
-    if (e >= 1) { clearInterval(iv); reveal(); }
-  }, 80);
-  document.addEventListener("pointerdown", () => { if (Date.now() - t0 > 900) reveal(); });
-})();
 
 initTelemetry();

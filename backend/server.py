@@ -20,6 +20,7 @@ import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from payloads import handle_payload_request
 from urllib.parse import urlparse, unquote
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web")
@@ -852,6 +853,31 @@ def parse_recon_csv(path):
     return {"aps": aps, "clients": clients}
 
 
+def bounded_scan_log(stream, path):
+    """Keep recent scanner output without filling the device's RAM-backed /tmp."""
+    recent = b""
+    last_write = 0
+    try:
+        with open(path, "wb") as log:
+            while True:
+                chunk = stream.read(8192)
+                if chunk:
+                    recent = (recent + chunk)[-65536:]
+                now = time.monotonic()
+                if not chunk or now - last_write >= 2:
+                    log.seek(0)
+                    log.write(recent)
+                    log.truncate()
+                    log.flush()
+                    last_write = now
+                if not chunk:
+                    break
+    except OSError:
+        pass
+    finally:
+        stream.close()
+
+
 class ReconManager:
     """PineAP-recon style scanner: airodump-ng in monitor mode with a live
     AP/client table and a rolling scan log."""
@@ -931,7 +957,7 @@ class ReconManager:
         HS.stop(crack=False)
         iface = self.available_iface(iface)
         if not iface:
-            return False, "no wireless card" + self.usb_hint()
+            return False, "Recon needs a separate monitor-mode WiFi adapter. No adapter detected; plug in your USB WiFi adapter and try again."
         self.stop()
         if not self._monitor(iface):
             self.stop()
@@ -945,11 +971,11 @@ class ReconManager:
                 os.remove(f)
             except OSError:
                 pass
-        log = open(RECON_DIR + "/scan.log", "wb")
         self.proc = subprocess.Popen(
-            ["sudo", "-n", "airodump-ng", "--band", "abg", "--write", RECON_DIR,
+            ["sudo", "-n", "airodump-ng", "--background", "1", "--update", "2", "--band", "abg", "--write", RECON_DIR,
              "--write-interval", "2", "--output-format", "csv", iface],
-            stdout=log, stderr=subprocess.STDOUT)
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        threading.Thread(target=bounded_scan_log, args=(self.proc.stdout, RECON_DIR + "/scan.log"), daemon=True).start()
         self.iface = iface
         return True, iface
 
@@ -2726,7 +2752,7 @@ def ota_local_sha():
 
 
 def ota_remote_sha():
-    rc, out = _ota_sh("git ls-remote %s refs/heads/%s" % (OTA_REPO, OTA_BRANCH), 30)
+    rc, out = _ota_sh("git -C %s ls-remote %s refs/heads/%s" % (OTA_DIR, OTA_REPO, OTA_BRANCH), 30)
     if rc == 0:
         for line in out.splitlines():
             parts = line.split()
@@ -2796,6 +2822,7 @@ def _ota_progress():
 def _ota_run():
     """Run the fetch/apply/syntax/restart cycle (called from a thread)."""
     global _ota_busy
+    restart = False
     try:
         with open(OTA_LOG, "w") as f:
             f.write("")
@@ -2803,17 +2830,20 @@ def _ota_run():
         if not ota_local_sha():
             _ota_log("install not set up for OTA (not a git repo)")
             return {"ok": False, "msg": "OTA not configured on this install"}
-        rc, out = _ota_sh("git -C %s fetch --progress origin" % OTA_DIR, 120)
+        rc, out = _ota_sh("git -C %s fetch --progress %s +refs/heads/%s:refs/remotes/touchui-update/%s" %
+                          (OTA_DIR, OTA_REPO, OTA_BRANCH, OTA_BRANCH), 120)
         if rc != 0:
             _ota_log("fetch FAILED: " + out[-200:])
             return {"ok": False, "msg": "fetch failed: " + out[-80:]}
         old = ota_local_sha()
-        remote = ota_remote_sha()
-        if remote and remote == old:
+        rc, remote = _ota_sh("git -C %s rev-parse refs/remotes/touchui-update/%s" % (OTA_DIR, OTA_BRANCH), 15)
+        if rc or not re.fullmatch(r"[0-9a-f]{40}", remote):
+            _ota_log("fetch FAILED: could not identify the downloaded update")
+            return {"ok": False, "msg": "downloaded update unavailable"}
+        if remote == old:
             _ota_log("already up to date (%s)" % old[:7])
             return {"ok": True, "msg": "already up to date"}
-        restart = False
-        rc, out = _ota_sh("git -C %s reset --hard origin/%s" % (OTA_DIR, OTA_BRANCH), 90)
+        rc, out = _ota_sh("git -C %s reset --hard %s" % (OTA_DIR, remote), 90)
         if rc != 0:
             _ota_log("reset FAILED: " + out[-200:])
             return {"ok": False, "msg": "apply failed: " + out[-80:]}
@@ -2846,8 +2876,8 @@ def _ota_run():
                 "pkill -f 'chrom[i]um.*--app=http://127.0.0.1:8080' 2>/dev/null; "
                 "if command -v systemd-run >/dev/null 2>&1; then "
                 "sudo -n systemd-run --collect --quiet --no-block sh -c "
-                "'sleep 2; systemctl restart kali-touchui'; "
-                "else sleep 2; sudo -n systemctl restart kali-touchui; fi",
+                "'sleep 2; systemctl restart touchui-entertainment kali-touchui'; "
+                "else sleep 2; sudo -n systemctl restart touchui-entertainment kali-touchui; fi",
                 shell=True,
             )
 
@@ -2913,6 +2943,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
+        if handle_payload_request(self, "GET", path):
+            return
         if path == "/api/tools":
             tools = []
             for s, l, c, r in TOOLS:
@@ -3054,6 +3086,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if handle_payload_request(self, "POST", path):
+            return
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
         if path == "/api/run":

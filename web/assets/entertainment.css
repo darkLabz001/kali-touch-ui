@@ -1,0 +1,31 @@
+.ent-page { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.ent-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ent-head h2 { font-size: 21px; color: var(--accent); }
+.ent-note { color: var(--muted); font-size: 12px; line-height: 1.4; margin-top: 4px; }
+.ent-button, .ent-track {
+  min-height: 46px; border: 1px solid var(--border); border-radius: 10px;
+  padding: 9px 14px; background: var(--panel2); color: var(--text); font-size: 15px;
+}
+.ent-head > .ent-button { flex-shrink: 0; }
+.ent-button.primary, .ent-track.selected { border-color: var(--accent-dim); color: var(--accent); background: #102b1a; }
+.ent-button:active { background: var(--accent-dim); }
+.ent-game-layout { display: grid; grid-template-columns: minmax(0, 1fr) 210px; gap: 18px; align-items: start; }
+.ent-side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.ent-score { font: 16px monospace; color: var(--accent); }
+.ent-status { font-size: 14px; color: var(--text); min-height: 20px; overflow-wrap: anywhere; }
+.ent-snake { display: block; width: 100%; max-width: 432px; aspect-ratio: 3 / 2; border: 1px solid var(--border); border-radius: 8px; touch-action: none; }
+.ent-pad { display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(2, 52px); gap: 6px; }
+.ent-dir { font-size: 24px; touch-action: manipulation; padding: 4px; }
+.ent-dir.up { grid-row: 1; grid-column: 2; }
+.ent-dir.left { grid-row: 2; grid-column: 1; }
+.ent-dir.down { grid-row: 2; grid-column: 2; }
+.ent-dir.right { grid-row: 2; grid-column: 3; }
+.ent-memory { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.ent-memory-card { min-height: 62px; border: 1px solid #345064; border-radius: 10px; background: var(--panel2); color: #8da7ba; font-size: 26px; }
+.ent-memory-card.revealed { color: #fff; border-color: #5ca8dc; background: #173148; }
+.ent-memory-card.matched { color: var(--accent); border-color: var(--accent-dim); background: #102b1a; opacity: .65; }
+@media (max-width: 600px) {
+  .ent-game-layout { grid-template-columns: 1fr; }
+  .ent-snake { max-height: 280px; width: auto; max-width: 100%; }
+  .ent-pad { max-width: 240px; }
+}
