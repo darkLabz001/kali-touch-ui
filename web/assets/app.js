@@ -1228,6 +1228,11 @@ let reconGraphBand = "2.4";
 let reconDirty = false;
 let reconSeries = {};
 let reconTrend = {};
+let reconWaterfall = [];
+let reconSeen = new Set();
+let reconArrivals = [];
+let reconArrivalBaseline = false;
+let reconWasRunning = false;
 const RECON_COLORS = ["#39ff14", "#00d9ff", "#ffb000", "#ff3bd3", "#ffe000", "#4cf0c0"];
 
 const reconColors = new Map();
@@ -1247,8 +1252,80 @@ function reconChartNetworks() {
   return aps.sort((a, b) => reconSignal(b) - reconSignal(a)).slice(0, 3);
 }
 
+function reconObserve(now = Date.now()) {
+  if (!reconLast.st.running) { reconWasRunning = false; return; }
+  if (!reconWasRunning) {
+    reconSeen.clear(); reconArrivals = []; reconWaterfall = []; reconArrivalBaseline = false;
+  }
+  reconWasRunning = true;
+  const devices = [
+    ...reconLast.d.aps.map(ap => ({key: "ap:" + ap.bssid.toUpperCase(), kind: "Access point", name: ap.essid || ap.bssid, ap})),
+    ...reconLast.d.clients.map(client => ({key: "client:" + client.station.toUpperCase(), kind: "Client", name: client.station, client}))
+  ];
+  for (const device of devices) {
+    if (reconSeen.size >= 10000 && !reconSeen.has(device.key)) continue;
+    if (!reconSeen.has(device.key) && reconArrivalBaseline) reconArrivals.unshift({...device, time: now});
+    reconSeen.add(device.key);
+  }
+  reconArrivalBaseline = true;
+  reconArrivals = reconArrivals.slice(0,30);
+  const aps = reconLast.d.aps.filter(ap => {
+    const seen = Date.parse((ap.last || "").replace(" ", "T"));
+    return Number.isFinite(seen) && now - seen <= 15000 && now - seen >= -5000 && reconSignal(ap) !== null;
+  }).map(ap => ({channel: Number(ap.channel), power: reconSignal(ap), band: scanBand(ap)}));
+  reconWaterfall.unshift({time: now, aps});
+  reconWaterfall = reconWaterfall.filter(row => now - row.time <= 180000).slice(0,60);
+  renderReconArrivals();
+}
+
+function renderReconArrivals() {
+  const feed = document.getElementById("re-arrival-feed"); if (!feed) return;
+  feed.replaceChildren();
+  for (const event of reconArrivals.slice(0,8)) {
+    const b = el("button", "re-arrival");
+    b.append(el("strong", "", event.kind + " · " + event.name), el("span", "", new Date(event.time).toLocaleTimeString()));
+    b.onclick = () => {
+      if (event.ap) reconSelect(event.ap);
+      else { reconClient = event.client.station; reconOpen = null; reconTab = "clients"; reconDo(reconLast.st,reconLast.d,reconLast.lg); }
+    };
+    feed.append(b);
+  }
+  if (!reconArrivals.length) feed.append(el("span", "ra-sub", "Watching for new devices after the initial scan baseline."));
+  feed.classList.toggle("arrival-pulse", !!reconArrivals[0] && Date.now() - reconArrivals[0].time < 4000);
+}
+
+function renderReconWaterfall() {
+  const cv = document.getElementById("re-graph"); if (!cv) return;
+  const w = cv.clientWidth || 450, h = cv.clientHeight || 190, dpr = Math.min(devicePixelRatio || 1,2);
+  cv.width = Math.round(w*dpr); cv.height = Math.round(h*dpr);
+  const ctx = cv.getContext("2d"); ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.fillStyle = "#071512"; ctx.fillRect(0,0,w,h);
+  const L=42,R=12,T=28,B=26,pw=w-L-R,ph=h-T-B;
+  const channels = reconGraphBand === "2.4" ? Array.from({length:14},(_,i)=>i+1) : [36,40,44,48,52,56,60,64,100,104,108,112,116,120,124,128,132,136,140,144,149,153,157,161,165,169,173,177];
+  const now = Date.now();
+  for (const row of reconWaterfall) {
+    const y=T+(now-row.time)/180000*ph;
+    for (let i=0;i<channels.length;i++) {
+      const signals=row.aps.filter(ap=>ap.band===reconGraphBand && ap.channel===channels[i]);
+      if (!signals.length) continue;
+      const strength=Math.max(...signals.map(ap=>ap.power));
+      const level=Math.max(0,Math.min(1,(strength+100)/70));
+      ctx.fillStyle=`hsl(${190-level*150} 90% ${20+level*40}%)`;
+      ctx.fillRect(L+i*pw/channels.length,y,pw/channels.length-1,Math.max(2,ph/60));
+    }
+  }
+  ctx.font="10px sans-serif";ctx.fillStyle="#b8d6ca";ctx.textAlign="left";
+  ctx.fillText((reconLast.st.running ? "LIVE" : "STOPPED")+" · WiFi signal · "+reconGraphBand+" GHz",L,15);
+  ctx.fillText("now",0,T+9);ctx.fillText("−3m",0,T+ph);
+  ctx.textAlign="center";
+  channels.forEach((ch,i)=>{if(channels.length<=14 ? i%2===0 : i%4===0)ctx.fillText(String(ch),L+(i+.5)*pw/channels.length,h-9);});
+  if (!reconWaterfall.some(row=>row.aps.some(ap=>ap.band===reconGraphBand))) {ctx.fillText("Waiting for fresh channel observations",L+pw/2,T+ph/2);}
+  cv.setAttribute("aria-label", "WiFi signal waterfall, "+reconGraphBand+" GHz, newest observations at top; brighter means stronger signal. Not spectrum energy or channel utilization.");
+}
+
 function reconSample() {
   const now = Date.now();
+  reconObserve(now);
   const cur = new Map(reconLast.d.aps.map(ap => [ap.bssid, reconSignal(ap)]));
   for (const key of cur.keys()) if (!reconSeries[key]) reconSeries[key] = [];
   for (const key of Object.keys(reconSeries)) {
@@ -1264,7 +1341,8 @@ function reconSample() {
 
 function renderReconGraph() {
   document.querySelectorAll('[data-graph-view]').forEach(b => b.classList.toggle('on', b.dataset.graphView === reconGraphView));
-  document.querySelectorAll("[data-graph-band]").forEach(b => b.classList.toggle("on", reconGraphView === "channels" && b.dataset.graphBand === reconGraphBand));
+  document.querySelectorAll("[data-graph-band]").forEach(b => b.classList.toggle("on", reconGraphView !== "history" && b.dataset.graphBand === reconGraphBand));
+  if (reconGraphView === "waterfall") { renderReconWaterfall(); return; }
   if (reconGraphView === "history") { renderReconHistory(); return; }
   const cv = document.getElementById("re-graph"); if (!cv) return;
   const w = cv.clientWidth || 450, h = cv.clientHeight || 190, dpr = Math.min(window.devicePixelRatio || 1,2);
@@ -1347,6 +1425,7 @@ function renderReconHistory() {
 function renderReconLegend() {
   const leg = document.getElementById("re-legend"); if (!leg) return;
   leg.replaceChildren();
+  if (reconGraphView === "waterfall") { leg.append(el("div", "ra-sub", "Newest at top · blue = weaker, yellow = stronger · observed WiFi signal, not channel utilization")); return; }
   const reset = el("button", "re-chart-reset", reconOpen ? "Show all networks" : reconGraphView === "history" ? "Strongest 3 · tap a network to isolate" : "Live networks · channel and signal · tap to select");
   reset.onclick = () => reconSelect(null); leg.append(reset);
   const networks = reconGraphView === "history" ? reconChartNetworks() : reconLast.d.aps.filter(reconMatch).filter(ap => scanBand(ap) === reconGraphBand).sort((a,b)=>Number(b.power)-Number(a.power));
@@ -1625,6 +1704,7 @@ function showRecon() {
   reconError = "";
   reconSeries = {};
   reconTrend = {};
+  reconWaterfall = []; reconSeen.clear(); reconArrivals = []; reconArrivalBaseline = false; reconWasRunning = false;
   const c = document.querySelector(".content");
   c.innerHTML = "";
   const page = el("div", "recon");
@@ -1642,13 +1722,13 @@ function showRecon() {
   const legend = el("div", "re-legend");
   legend.id = "re-legend";
   const graphControls = el("div", "re-tabs");
-  for (const [view,label] of [["channels","Live channels"],["history","Signal history"]]) {
+  for (const [view,label] of [["channels","Live channels"],["waterfall","Waterfall"],["history","Signal history"]]) {
     const b=el("button","chip",label);b.dataset.graphView=view;
     b.onclick=()=>{reconGraphView=view;renderReconGraph();renderReconLegend();};graphControls.append(b);
   }
   for(const band of ["2.4","5"]) {
     const b=el("button","chip",band+" GHz"); b.dataset.graphBand=band;
-    b.onclick=()=>{reconGraphBand=band;reconGraphView="channels";renderReconGraph();renderReconLegend();};graphControls.append(b);
+    b.onclick=()=>{reconGraphBand=band;if(reconGraphView!=="waterfall")reconGraphView="channels";renderReconGraph();renderReconLegend();};graphControls.append(b);
   }
   gwrap.append(graphControls);
   const gcanvas = document.createElement("canvas");
@@ -1670,6 +1750,11 @@ function showRecon() {
   const stats = el("div", "re-stats");
   stats.id = "re-stats";
   page.appendChild(stats);
+  const arrivals = el("details", "re-arrivals"); arrivals.open = true;
+  arrivals.append(el("summary", "", "Device arrivals"), el("div", "ra-sub", "Newly observed in this scan · first observations form the baseline"));
+  const feed = el("div", ""); feed.id = "re-arrival-feed"; feed.setAttribute("role", "status"); feed.setAttribute("aria-live", "polite");
+  arrivals.append(feed); page.append(arrivals);
+
 
   const bar = el("div", "re-bar");
   const on = el("button", "big-btn run", "▶ SCAN ON");
@@ -1678,6 +1763,7 @@ function showRecon() {
     try {
       const r = await fetch("/api/recon/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
       const j = await r.json();
+      if (j.ok) reconWasRunning = false;
       reconError = j.ok ? "" : (j.msg || "Scan could not start.");
       hint.textContent = j.ok ? "scanning " + j.msg : "✗ " + reconError;
     } catch (e) { reconError = "Could not contact the scanner. Try again."; }
@@ -1725,9 +1811,12 @@ function showRecon() {
   c.appendChild(page);
   reconLast = { st: { running: false, iface: null, aps: 0, clients: 0 }, d: { aps: [], clients: [] }, lg: { log: "" } };
   reconDo(reconLast.st, reconLast.d, reconLast.lg);
+  renderReconArrivals();
 
+  let polling = false;
   const poke = async () => {
-    if (!reconPageOpen) return;
+    if (!reconPageOpen || polling) return;
+    polling = true;
     try {
       const [st, d, lg] = await Promise.all([
         fetch("/api/recon/state").then(r => r.json()),
@@ -1738,7 +1827,7 @@ function showRecon() {
       reconLast = { st, d, lg };
       reconDo(st, d, lg, false);
       reconSample();
-    } catch (e) {}
+    } catch (e) {} finally { polling = false; }
   };
   reconTimer = setInterval(poke, 3000);
   poke();

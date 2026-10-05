@@ -353,3 +353,9 @@ syntax checks do not write cache files into the installation. The updater instal
 the device helper service before restarting it, including on older 4-inch installs.
 
 WiFi status reports the connected radio independently of the USB scanning adapter.
+
+### WiFi waterfall and arrivals
+
+In Wireless → Recon, start a scan and select **Waterfall** to view three minutes of observed WiFi signal by channel. Switch between 2.4 and 5 GHz; newer samples appear at the top, with stronger signals brighter. This uses access point observations refreshed every three seconds, not spectrum energy or channel utilization. Observations older than 15 seconds leave gaps instead of appearing live.
+
+**Device arrivals** establishes a baseline on the first scan snapshot, then highlights newly observed access points and clients. Tap an arrival to inspect it. Alerts are deduplicated for the scan session; restarting a scan resets the baseline. The feed retains the latest 30 arrivals and shows eight, with bounded scrolling on both screen sizes.
