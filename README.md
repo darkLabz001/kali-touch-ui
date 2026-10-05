@@ -359,3 +359,5 @@ WiFi status reports the connected radio independently of the USB scanning adapte
 In Wireless → Recon, start a scan and select **Waterfall** to view 60 seconds of observed WiFi signal by channel. Both 2.4 and 5 GHz panels appear together by default; select a band to enlarge it; newer samples appear at the top, with stronger signals brighter. This uses access point observations refreshed every second, not spectrum energy or channel utilization. Observations older than 15 seconds leave gaps instead of appearing live.
 
 **Device arrivals** establishes a baseline on the first scan snapshot, then highlights newly observed access points and clients. Tap an arrival to inspect it. Alerts are deduplicated for the scan session; restarting a scan resets the baseline. The feed retains the latest 30 arrivals and shows eight, with bounded scrolling on both screen sizes.
+
+The 4-inch edition supports finger dragging even on panels that report mouse events, with momentum and visible scrollbars. Nested lists pass scrolling to the page at their edges. Terminal output wraps long lines by default; use **↔** to toggle wrapping or **⇣** to return to the latest output.

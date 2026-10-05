@@ -930,7 +930,7 @@ function termConnect(cmd) {
     } else if (rst) {
       rst.style.display = "none";
     }
-    const followOutput = out.scrollHeight - out.scrollTop - out.clientHeight < 32;
+    const followOutput = !document.body.matches(".touch-dragging,.touch-coasting") && out.scrollHeight - out.scrollTop - out.clientHeight < 32;
     tFeed(text);
     if (followOutput) out.scrollTop = out.scrollHeight;
   };
@@ -1746,7 +1746,7 @@ function reconDo(st, d, lg, drawChart = true) {
   }
   if (focused) [...table.querySelectorAll("[data-node]")].find(b => b.dataset.node === focused)?.focus({preventScroll: true});
   if (drawChart) { renderReconGraph(); renderReconLegend(); renderReconChstrip(); }
-  if (log) { log.textContent = lg.log.trim().split("\n").slice(-24).join("\n"); log.scrollTop = 1e9; }
+  if (log) { const following = !document.body.matches(".touch-dragging,.touch-coasting") && log.scrollHeight-log.scrollTop-log.clientHeight<32; log.textContent = lg.log.trim().split("\n").slice(-24).join("\n"); if(following)log.scrollTop=log.scrollHeight; }
   if (reconDirty) { reconDirty = false; }
 }
 

@@ -85,3 +85,17 @@ html[data-edition="35inch"] .hub-home { grid-template-columns: repeat(2, minmax(
 @media (min-width: 740px) and (orientation: landscape) {
   html[data-edition="4inch"] .hub-home { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
+
+/* Finger dragging also works when the resistive driver reports mouse events. */
+html[data-edition="4inch"] :is(.content,.term-out,.console,.re-table,.re-legend,.re-log,.ota-log,#re-arrival-feed,.term-keys) {
+  scrollbar-width: thin; scrollbar-color: #4a9b86 #0b1816;
+}
+html[data-edition="4inch"] :is(.content,.term-out,.console,.re-table,.re-legend,.re-log,.ota-log,#re-arrival-feed,.term-keys)::-webkit-scrollbar { display: block; width: 10px; height: 10px; }
+html[data-edition="4inch"] :is(.content,.term-out,.console,.re-table,.re-legend,.re-log,.ota-log,#re-arrival-feed,.term-keys)::-webkit-scrollbar-track { background: #0b1816; border-radius: 6px; }
+html[data-edition="4inch"] :is(.content,.term-out,.console,.re-table,.re-legend,.re-log,.ota-log,#re-arrival-feed,.term-keys)::-webkit-scrollbar-thumb { background: #4a9b86; border: 2px solid #0b1816; border-radius: 6px; }
+html[data-edition="4inch"] :is(.re-table,.re-legend,.re-log,.ota-log,#re-arrival-feed) { overscroll-behavior: auto; }
+html[data-edition="4inch"] body.touch-dragging, html[data-edition="4inch"] body.touch-dragging * { user-select: none; cursor: grabbing; }
+.terminal-scroll-control { display: none; }
+html[data-edition="4inch"] body.terminal-active .terminal-scroll-control { display: flex; flex-shrink: 0; }
+html[data-edition="4inch"] body.terminal-active .term-out { white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; }
+html[data-edition="4inch"] body.terminal-active.terminal-no-wrap .term-out { white-space: pre; overflow-wrap: normal; }
